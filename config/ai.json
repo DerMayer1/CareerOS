@@ -1,0 +1,11 @@
+{
+  "provider": "codex-cli",
+  "enabled": true,
+  "command": "codex",
+  "model": "",
+  "sandbox": "workspace-write",
+  "approval": "never",
+  "output_dir": "outputs/ai",
+  "web_search": false,
+  "timeout_ms": 300000
+}

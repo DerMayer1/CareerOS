@@ -33,6 +33,14 @@ career-os show top
 | `career-os sources list` | List configured remote sources |
 | `career-os search <source|all>` | Search remote sources and append raw jobs |
 | `career-os profile check` | Report missing/TODO profile fields |
+| `career-os ai doctor` | Verify Codex CLI availability and CareerOS AI configuration |
+| `career-os ai profile-sync` | Ask Codex to review profile files and propose edits |
+| `career-os ai extract <job_id|new>` | Ask Codex to extract nuanced requirements from job descriptions |
+| `career-os ai review-fit <job_id>` | Ask Codex to review one deterministic score and recommendation |
+| `career-os ai summarize-report` | Ask Codex to summarize the latest decision report |
+| `career-os ai draft <id>` | Ask Codex to draft approved application material |
+| `career-os ai review-draft <id>` | Ask Codex to review approved application drafts |
+| `career-os ai interview <id>` | Ask Codex to create deeper interview prep |
 | `career-os import <file>` | Import JSON, JSONL, or CSV jobs into `data/jobs_raw.jsonl` |
 | `career-os normalize` | Convert raw jobs into the CareerOS job model |
 | `career-os dedupe` | Deduplicate normalized jobs and update seen state |
@@ -67,6 +75,41 @@ Phase 1 intentionally avoids scraping and full application generation. It provid
 - Local files remain the source of truth.
 
 Remote connectors, AI-assisted extraction, full CV/carta generation, and company intelligence are later phases.
+
+## Codex CLI Integration
+
+CareerOS uses Codex CLI as an optional judgment layer on top of the deterministic pipeline. The core commands still import, normalize, dedupe, score, and report without AI. Codex is used when the task needs language judgment: profile review, nuanced requirement extraction, fit review, report summary, application drafting, draft review, and interview prep.
+
+Configure it in `config/ai.json`:
+
+```json
+{
+  "provider": "codex-cli",
+  "enabled": true,
+  "command": "codex",
+  "model": "",
+  "sandbox": "workspace-write",
+  "approval": "never",
+  "output_dir": "outputs/ai",
+  "web_search": false,
+  "timeout_ms": 300000
+}
+```
+
+Typical use:
+
+```bash
+career-os ai doctor
+career-os ai profile-sync --dry-run
+career-os ai extract new --limit 5
+career-os ai review-fit <job_id>
+career-os ai summarize-report
+career-os ai draft <application_id>
+career-os ai review-draft <application_id>
+career-os ai interview <application_id>
+```
+
+Every AI command writes the prompt and response under `outputs/ai`. Application AI commands also copy the final Codex response into the approved application workspace, for example `ai-draft.md` or `ai-interview-prep.md`. CareerOS still does not submit applications automatically.
 
 ## Remote Search
 

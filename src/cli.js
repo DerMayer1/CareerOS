@@ -3,6 +3,7 @@ const path = require("path");
 const crypto = require("crypto");
 const http = require("http");
 const https = require("https");
+const childProcess = require("child_process");
 
 const ROOT = process.cwd();
 const DATA_DIR = path.join(ROOT, "data");
@@ -12,6 +13,7 @@ const PATHS = {
   searchProfile: path.join(ROOT, "config", "search_profile.json"),
   scoringWeights: path.join(ROOT, "config", "scoring_weights.json"),
   sourcesConfig: path.join(ROOT, "config", "sources.json"),
+  aiConfig: path.join(ROOT, "config", "ai.json"),
   candidateProfile: path.join(ROOT, "profile", "candidate-profile.md"),
   candidateProfileJson: path.join(ROOT, "profile", "candidate-profile.json"),
   skillTaxonomy: path.join(ROOT, "profile", "skill-taxonomy.json"),
@@ -22,7 +24,8 @@ const PATHS = {
   sourceCache: path.join(DATA_DIR, "source_cache.json"),
   applications: path.join(DATA_DIR, "applications.csv"),
   reports: path.join(OUTPUTS_DIR, "reports"),
-  tables: path.join(OUTPUTS_DIR, "tables")
+  tables: path.join(OUTPUTS_DIR, "tables"),
+  aiOutputs: path.join(OUTPUTS_DIR, "ai")
 };
 
 const APPLICATION_HEADERS = [
@@ -77,6 +80,7 @@ function main(args) {
   if (command === "run") return runPipeline(args.slice(1));
   if (command === "status") return showStatus();
   if (command === "profile" && args[1] === "check") return checkProfile();
+  if (command === "ai") return runAiCommand(args.slice(1));
   if (command === "applications" && args[1] === "list") return listApplications(args[2]);
   if (command === "applications" && args[1] === "status") return updateApplicationStatus(args[2], args[3]);
   if (command === "applications" && args[1] === "followup") return updateApplicationFollowup(args[2], args.slice(3));
@@ -112,6 +116,14 @@ Usage:
   career-os report
   career-os status
   career-os profile check
+  career-os ai doctor
+  career-os ai profile-sync [--dry-run]
+  career-os ai extract <job_id|new> [--limit 5] [--dry-run]
+  career-os ai review-fit <job_id> [--dry-run]
+  career-os ai summarize-report [--dry-run]
+  career-os ai draft <application_id|job_id> [--dry-run]
+  career-os ai review-draft <application_id|job_id> [--dry-run]
+  career-os ai interview <application_id|job_id> [--dry-run]
   career-os applications list [limit]
   career-os applications status <application_id> <status>
   career-os applications followup <application_id> --date YYYY-MM-DD
@@ -147,6 +159,7 @@ function initProject() {
   writeIfMissing(PATHS.searchProfile, JSON.stringify(defaultSearchProfile(), null, 2) + "\n");
   writeIfMissing(PATHS.scoringWeights, JSON.stringify(defaultScoringWeights(), null, 2) + "\n");
   writeIfMissing(PATHS.sourcesConfig, JSON.stringify(defaultSourcesConfig(), null, 2) + "\n");
+  writeIfMissing(PATHS.aiConfig, JSON.stringify(defaultAiConfig(), null, 2) + "\n");
   writeIfMissing(PATHS.candidateProfile, candidateProfileMd());
   writeIfMissing(PATHS.candidateProfileJson, JSON.stringify(defaultCandidateProfileJson(), null, 2) + "\n");
   writeIfMissing(PATHS.skillTaxonomy, JSON.stringify(defaultSkillTaxonomy(), null, 2) + "\n");
@@ -157,6 +170,7 @@ function initProject() {
   writeIfMissing(path.join(ROOT, "workflows", "report.md"), workflowReportMd());
   writeIfMissing(path.join(ROOT, "workflows", "setup.md"), workflowSetupMd());
   writeIfMissing(path.join(ROOT, "workflows", "apply.md"), workflowApplyMd());
+  writeIfMissing(path.join(ROOT, "workflows", "ai.md"), workflowAiMd());
   writeIfMissing(path.join(ROOT, "workflows", "reset.md"), workflowResetMd());
   writeIfMissing(path.join(ROOT, "skills", "job-radar", "SKILL.md"), jobRadarSkillMd());
   writeIfMissing(path.join(ROOT, "skills", "job-radar", "scoring-rules.md"), scoringRulesMd());
@@ -165,6 +179,7 @@ function initProject() {
   writeIfMissing(path.join(ROOT, "skills", "job-application", "SKILL.md"), jobApplicationSkillMd());
   writeIfMissing(path.join(ROOT, "skills", "job-application", "evaluation-framework.md"), evaluationFrameworkMd());
   writeIfMissing(path.join(ROOT, "docs", "claude-to-codex-migration.md"), migrationMd());
+  writeIfMissing(path.join(ROOT, "docs", "codex-cli-integration.md"), codexCliIntegrationMd());
   writeIfMissing(path.join(ROOT, "sources", "README.md"), sourcesReadmeMd());
   writeIfMissing(PATHS.rawJobs, "");
   writeIfMissing(PATHS.normalizedJobs, "[]\n");
@@ -458,6 +473,420 @@ function checkProfile() {
     return { label, path: relative(filePath), exists, todo_count: todoCount, parse_error: parseError || null, ready: exists && todoCount === 0 && !parseError };
   });
   console.log(JSON.stringify({ ready: checks.every((check) => check.ready), checks }, null, 2));
+}
+
+function runAiCommand(args) {
+  const subcommand = args[0];
+  if (!subcommand || subcommand === "help" || subcommand === "--help" || subcommand === "-h") {
+    printAiHelp();
+    return;
+  }
+
+  if (subcommand === "doctor") return aiDoctor();
+  if (subcommand === "profile-sync") return aiProfileSync(args.slice(1));
+  if (subcommand === "extract") return aiExtract(args.slice(1));
+  if (subcommand === "review-fit") return aiReviewFit(args.slice(1));
+  if (subcommand === "summarize-report") return aiSummarizeReport(args.slice(1));
+  if (subcommand === "draft") return aiDraft(args.slice(1));
+  if (subcommand === "review-draft") return aiReviewDraft(args.slice(1));
+  if (subcommand === "interview") return aiInterview(args.slice(1));
+
+  throw new Error(`Unknown ai command: ${subcommand}`);
+}
+
+function printAiHelp() {
+  console.log(`CareerOS AI commands
+
+Usage:
+  career-os ai doctor
+  career-os ai profile-sync [--dry-run]
+  career-os ai extract <job_id|new> [--limit 5] [--dry-run]
+  career-os ai review-fit <job_id> [--dry-run]
+  career-os ai summarize-report [--dry-run]
+  career-os ai draft <application_id|job_id> [--dry-run]
+  career-os ai review-draft <application_id|job_id> [--dry-run]
+  career-os ai interview <application_id|job_id> [--dry-run]
+
+Rules:
+  AI commands call Codex CLI through codex exec.
+  Prompts and responses are saved under outputs/ai.
+  Application AI commands require the normal approve/apply gate first.
+  CareerOS never submits applications or contacts employers automatically.
+`);
+}
+
+function aiDoctor() {
+  ensureDirs();
+  const config = readJson(PATHS.aiConfig, defaultAiConfig());
+  const pathProbe = probeCodexCommand(config, "path");
+  const versionProbe = probeCodexCommand(config, "version");
+  const execProbe = probeCodexCommand(config, "exec-help");
+  console.log(JSON.stringify({
+    provider: config.provider || "codex-cli",
+    enabled: config.enabled !== false,
+    command: config.command || "codex",
+    sandbox: config.sandbox || "workspace-write",
+    approval: config.approval || "never",
+    web_search: Boolean(config.web_search),
+    available: versionProbe.ok && execProbe.ok,
+    path: pathProbe.output.trim(),
+    version: versionProbe.output.trim(),
+    exec_help_available: execProbe.ok,
+    errors: [pathProbe, versionProbe, execProbe].filter((probe) => !probe.ok).map((probe) => ({
+      check: probe.check,
+      error: probe.error
+    }))
+  }, null, 2));
+}
+
+function aiProfileSync(args) {
+  const flags = parseFlags(args);
+  const prompt = aiPrompt("Profile Sync", `
+Review the CareerOS profile files and return practical profile improvements.
+
+Constraints:
+- Do not invent experience, compensation, credentials, work authorization, or company facts.
+- Keep uncertain data as unknown.
+- Do not edit files directly.
+- Return Markdown with a short findings list and exact proposed patches or replacement snippets.
+
+Files:
+
+## profile/candidate-profile.md
+${fence(readText(PATHS.candidateProfile), "markdown")}
+
+## profile/candidate-profile.json
+${fence(JSON.stringify(readJson(PATHS.candidateProfileJson, defaultCandidateProfileJson()), null, 2), "json")}
+
+## profile/role-preferences.md
+${fence(readText(PATHS.rolePreferences), "markdown")}
+
+## profile/skill-taxonomy.json
+${fence(JSON.stringify(readJson(PATHS.skillTaxonomy, defaultSkillTaxonomy()), null, 2), "json")}
+`);
+  runCodexPrompt("profile-sync", prompt, flags);
+}
+
+function aiExtract(args) {
+  const target = args[0];
+  if (!target) throw new Error("Usage: career-os ai extract <job_id|new> [--limit 5] [--dry-run]");
+  const flags = parseFlags(args.slice(1));
+  const limit = Math.max(1, Math.min(Number(flags.limit || 5), 20));
+  const jobs = readJson(PATHS.normalizedJobs, []);
+  const selected = target === "new"
+    ? jobs.filter((job) => !job.extracted_signals || !Object.keys(job.extracted_signals || {}).length).slice(0, limit)
+    : jobs.filter((job) => job.id === target).slice(0, limit);
+  if (!selected.length) throw new Error(`No jobs found for AI extraction target: ${target}`);
+
+  const prompt = aiPrompt("Requirement Extraction", `
+Extract job requirements from the selected CareerOS jobs.
+
+Constraints:
+- Do not change files.
+- Do not guess missing facts.
+- Use "unknown" for missing seniority, authorization, salary, or remote constraints.
+- Return one JSON object with a "jobs" array keyed by job_id.
+- For each job include required_skills, nice_to_have_skills, responsibilities, seniority, work_authorization, remote_constraints, salary_notes, red_flags, and confidence.
+
+Selected jobs:
+${fence(JSON.stringify(selected.map(aiJobPayload), null, 2), "json")}
+`);
+  runCodexPrompt(`extract-${target}`, prompt, flags);
+}
+
+function aiReviewFit(args) {
+  const jobId = args[0];
+  if (!isValidIdArg(jobId)) throw new Error("Usage: career-os ai review-fit <job_id> [--dry-run]");
+  const flags = parseFlags(args.slice(1));
+  const job = findJob(jobId);
+  const prompt = aiPrompt("Fit Review", `
+Review whether the deterministic CareerOS score and recommendation are sensible.
+
+Constraints:
+- Do not edit files.
+- Do not invent candidate facts.
+- Keep the deterministic score as the source of truth unless you identify a concrete issue.
+- Return Markdown with: verdict, score concerns, missing information, red flags, and recommended next action.
+
+Candidate profile:
+${fence(JSON.stringify(readJson(PATHS.candidateProfileJson, defaultCandidateProfileJson()), null, 2), "json")}
+
+Profile notes:
+${fence(truncateText(readText(PATHS.candidateProfile), 6000), "markdown")}
+
+Job:
+${fence(JSON.stringify(aiJobPayload(job), null, 2), "json")}
+`);
+  runCodexPrompt(`review-fit-${job.id}`, prompt, flags);
+}
+
+function aiSummarizeReport(args) {
+  const flags = parseFlags(args);
+  const latestReport = latestFile(PATHS.reports, ".md");
+  if (!latestReport) throw new Error("No report found. Run career-os report first.");
+  const reportPath = path.join(ROOT, latestReport);
+  const tables = {};
+  if (fs.existsSync(PATHS.tables)) {
+    for (const file of fs.readdirSync(PATHS.tables).filter((name) => name.endsWith(".csv"))) {
+      tables[file] = truncateText(readText(path.join(PATHS.tables, file)), 12000);
+    }
+  }
+  const prompt = aiPrompt("Report Summary", `
+Summarize the latest CareerOS decision report for a human operator.
+
+Constraints:
+- Do not fetch new jobs.
+- Do not rescore jobs.
+- Do not invent missing facts.
+- Return concise Markdown with: best opportunities, avoid list, skill gaps, salary concerns, and next manual actions.
+
+Latest report path: ${latestReport}
+
+Report:
+${fence(truncateText(readText(reportPath), 20000), "markdown")}
+
+CSV tables:
+${fence(JSON.stringify(tables, null, 2), "json")}
+`);
+  runCodexPrompt("report-summary", prompt, flags);
+}
+
+function aiDraft(args) {
+  const id = args[0];
+  if (!isValidIdArg(id)) throw new Error("Usage: career-os ai draft <application_id|job_id> [--dry-run]");
+  const flags = parseFlags(args.slice(1));
+  const context = getApplicationContext(id);
+  const dir = ensureApplicationDir(context.job, context.application);
+  const prompt = aiApplicationPrompt("Application Draft", context, dir, `
+Create reviewable application drafts for the approved job.
+
+Constraints:
+- Do not claim unsupported experience or credentials.
+- Do not change compensation, location, authorization, or company facts.
+- Do not submit anything.
+- Return Markdown with sections: application_message, cover_letter, cv_tailoring_notes, questions_to_answer_before_submitting.
+- Keep the application message concise enough for a web form.
+`);
+  const result = runCodexPrompt(`draft-${context.application.application_id}`, prompt, flags);
+  copyAiOutputToApplication(result, dir, "ai-draft.md", flags);
+}
+
+function aiReviewDraft(args) {
+  const id = args[0];
+  if (!isValidIdArg(id)) throw new Error("Usage: career-os ai review-draft <application_id|job_id> [--dry-run]");
+  const flags = parseFlags(args.slice(1));
+  const context = getApplicationContext(id);
+  const dir = ensureApplicationDir(context.job, context.application);
+  const prompt = aiApplicationPrompt("Draft Review", context, dir, `
+Review the current application workspace for accuracy, fit, and submission risk.
+
+Constraints:
+- Do not rewrite everything unless there is a concrete reason.
+- Flag unsupported claims, vague evidence, missing information, and tone problems.
+- Do not submit anything.
+- Return Markdown with: approval_status, required_fixes, optional_improvements, unsupported_claims, final_checklist.
+`);
+  const result = runCodexPrompt(`review-draft-${context.application.application_id}`, prompt, flags);
+  copyAiOutputToApplication(result, dir, "ai-draft-review.md", flags);
+}
+
+function aiInterview(args) {
+  const id = args[0];
+  if (!isValidIdArg(id)) throw new Error("Usage: career-os ai interview <application_id|job_id> [--dry-run]");
+  const flags = parseFlags(args.slice(1));
+  const context = getApplicationContext(id);
+  const dir = ensureApplicationDir(context.job, context.application);
+  const prompt = aiApplicationPrompt("Interview Prep", context, dir, `
+Create an interview preparation brief for this approved application.
+
+Constraints:
+- Do not invent candidate background.
+- Mark unknowns explicitly.
+- Return Markdown with: likely interview themes, job-specific talking points, questions to ask, gaps to prepare, and short practice prompts.
+`);
+  const result = runCodexPrompt(`interview-${context.application.application_id}`, prompt, flags);
+  copyAiOutputToApplication(result, dir, "ai-interview-prep.md", flags);
+}
+
+function aiPrompt(title, body) {
+  return `# CareerOS Codex Task: ${title}
+
+You are assisting CareerOS, a local-first decision system for remote jobs.
+
+Operating rules:
+- Use the provided local context only unless explicitly told otherwise.
+- Preserve the approval gate. Do not generate or suggest submitting applications for unapproved jobs.
+- Do not invent candidate experience, compensation, credentials, work authorization, or company facts.
+- Keep uncertain data as unknown.
+- Prefer concise, reviewable Markdown or JSON.
+
+${body.trim()}
+`;
+}
+
+function aiApplicationPrompt(title, context, dir, task) {
+  const workspaceFiles = readApplicationWorkspace(dir);
+  return aiPrompt(title, `
+${task.trim()}
+
+Application tracker row:
+${fence(JSON.stringify(context.application, null, 2), "json")}
+
+Job:
+${fence(JSON.stringify(aiJobPayload(context.job), null, 2), "json")}
+
+Candidate profile JSON:
+${fence(JSON.stringify(readJson(PATHS.candidateProfileJson, defaultCandidateProfileJson()), null, 2), "json")}
+
+Candidate profile notes:
+${fence(truncateText(readText(PATHS.candidateProfile), 8000), "markdown")}
+
+Application workspace files from ${relative(dir)}:
+${fence(JSON.stringify(workspaceFiles, null, 2), "json")}
+`);
+}
+
+function runCodexPrompt(label, prompt, flags = {}) {
+  ensureDirs();
+  const config = readJson(PATHS.aiConfig, defaultAiConfig());
+  const outputDir = path.resolve(ROOT, config.output_dir || "outputs/ai");
+  fs.mkdirSync(outputDir, { recursive: true });
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const safeLabel = slugify(label || "codex");
+  const promptPath = path.join(outputDir, `${timestamp}-${safeLabel}.prompt.md`);
+  const outputPath = path.join(outputDir, `${timestamp}-${safeLabel}.md`);
+  fs.writeFileSync(promptPath, prompt);
+
+  if (flags["dry-run"] || config.enabled === false) {
+    console.log(`Wrote prompt: ${relative(promptPath)}`);
+    if (config.enabled === false && !flags["dry-run"]) console.log("AI config is disabled; skipped Codex execution.");
+    return { promptPath, outputPath, skipped: true };
+  }
+
+  const codexArgs = [
+    "exec",
+    "--cd", ROOT,
+    "--sandbox", config.sandbox || "workspace-write",
+    "--ask-for-approval", config.approval || "never",
+    "--output-last-message", outputPath
+  ];
+  if (config.model) codexArgs.push("--model", config.model);
+  if (config.web_search) codexArgs.push("--search");
+  codexArgs.push("-");
+
+  const command = config.command || "codex";
+  try {
+    const output = runProcess(command, codexArgs, {
+      input: prompt,
+      timeout: Number(config.timeout_ms || 300000)
+    });
+    if (output.trim()) console.log(output.trim());
+  } catch (error) {
+    throw new Error(`Codex CLI failed. Prompt saved at ${relative(promptPath)}. ${error.message}`);
+  }
+
+  console.log(`Wrote prompt: ${relative(promptPath)}`);
+  console.log(`Wrote output: ${relative(outputPath)}`);
+  return { promptPath, outputPath, skipped: false };
+}
+
+function runProcess(command, args, options = {}) {
+  const common = {
+    cwd: ROOT,
+    input: options.input || "",
+    encoding: "utf8",
+    timeout: options.timeout || 30000,
+    maxBuffer: 1024 * 1024 * 20,
+    windowsHide: true
+  };
+  if (process.platform === "win32") {
+    const commandLine = [command, ...args].map(quoteCmdArg).join(" ");
+    return childProcess.execFileSync("cmd.exe", ["/d", "/s", "/c", commandLine], common);
+  }
+  return childProcess.execFileSync(command, args, common);
+}
+
+function probeCodexCommand(config, check) {
+  const command = config.command || "codex";
+  const argsByCheck = {
+    path: process.platform === "win32" ? ["/d", "/s", "/c", `where ${quoteCmdArg(command)}`] : ["-lc", `command -v ${shellQuote(command)}`],
+    version: process.platform === "win32" ? ["/d", "/s", "/c", `${quoteCmdArg(command)} --version`] : ["-lc", `${shellQuote(command)} --version`],
+    "exec-help": process.platform === "win32" ? ["/d", "/s", "/c", `${quoteCmdArg(command)} exec --help`] : ["-lc", `${shellQuote(command)} exec --help`]
+  };
+  try {
+    const output = process.platform === "win32"
+      ? childProcess.execFileSync("cmd.exe", argsByCheck[check], { cwd: ROOT, encoding: "utf8", timeout: 15000, maxBuffer: 1024 * 1024 * 2, windowsHide: true })
+      : childProcess.execFileSync("sh", argsByCheck[check], { cwd: ROOT, encoding: "utf8", timeout: 15000, maxBuffer: 1024 * 1024 * 2 });
+    return { check, ok: true, output, error: "" };
+  } catch (error) {
+    return { check, ok: false, output: error.stdout || "", error: (error.stderr || error.message || String(error)).trim() };
+  }
+}
+
+function copyAiOutputToApplication(result, dir, fileName, flags) {
+  if (flags["dry-run"] || result.skipped) return;
+  if (!fs.existsSync(result.outputPath)) return;
+  const target = path.join(dir, fileName);
+  fs.copyFileSync(result.outputPath, target);
+  console.log(`Wrote ${relative(target)}`);
+}
+
+function findJob(jobId) {
+  const jobs = readJson(PATHS.normalizedJobs, []);
+  const job = jobs.find((item) => item.id === jobId);
+  if (!job) throw new Error(`Job not found: ${jobId}`);
+  return job;
+}
+
+function aiJobPayload(job) {
+  return {
+    id: job.id,
+    title: job.title,
+    company: job.company,
+    source_site: job.source_site,
+    source_url: job.source_url,
+    apply_url: job.apply_url,
+    location_raw: job.location_raw,
+    remote_region: job.remote_region,
+    salary_raw: job.salary_raw,
+    salary_monthly_usd_min: job.salary_monthly_usd_min,
+    salary_monthly_usd_max: job.salary_monthly_usd_max,
+    recommendation: job.recommendation,
+    score_fit: job.score_fit,
+    score_explanation: job.score_explanation,
+    extracted_signals: job.extracted_signals,
+    red_flags: job.red_flags,
+    description: truncateText(job.description || "", 12000)
+  };
+}
+
+function readApplicationWorkspace(dir) {
+  if (!fs.existsSync(dir)) return {};
+  const files = {};
+  for (const file of fs.readdirSync(dir).filter((name) => name.endsWith(".md")).sort()) {
+    files[file] = truncateText(readText(path.join(dir, file)), 12000);
+  }
+  return files;
+}
+
+function truncateText(value, maxLength) {
+  const text = String(value || "");
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, maxLength)}\n\n[truncated ${text.length - maxLength} chars]`;
+}
+
+function fence(value, language) {
+  return `\`\`\`${language || ""}\n${String(value || "").replace(/```/g, "` ` `")}\n\`\`\``;
+}
+
+function quoteCmdArg(value) {
+  const text = String(value);
+  if (!/[ \t&()^|<>"%]/.test(text)) return text;
+  return `"${text.replace(/"/g, '\\"')}"`;
+}
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, "'\\''")}'`;
 }
 
 function listApplications(limitArg) {
@@ -2236,6 +2665,7 @@ function ensureDirs() {
     "templates/reports",
     "outputs/reports",
     "outputs/tables",
+    "outputs/ai",
     "outputs/applications"
   ].forEach((dir) => fs.mkdirSync(path.join(ROOT, dir), { recursive: true }));
 }
@@ -2315,6 +2745,20 @@ function defaultScoringWeights() {
     company_quality: 10,
     growth_potential: 5,
     application_friction: 5
+  };
+}
+
+function defaultAiConfig() {
+  return {
+    provider: "codex-cli",
+    enabled: true,
+    command: "codex",
+    model: "",
+    sandbox: "workspace-write",
+    approval: "never",
+    output_dir: "outputs/ai",
+    web_search: false,
+    timeout_ms: 300000
   };
 }
 
@@ -2405,6 +2849,7 @@ Rules:
 - Do not invent candidate experience, compensation, credentials, or work authorization.
 - Prefer deterministic CLI commands for import, parsing, dedupe, normalization, sorting, and export.
 - Use AI judgment only for requirement extraction, fit analysis, red flags, interview prep, and application writing.
+- Use \`career-os ai ...\` as the Codex CLI integration surface.
 - Keep data in open local files: JSONL, JSON, CSV, Markdown, and PDF.
 - Mark unknown data as unknown. Do not fill gaps with guesses.
 - Treat token economy as a product requirement.
@@ -2440,6 +2885,21 @@ career-os score
 career-os report
 career-os show top
 \`\`\`
+
+## Codex CLI Integration
+
+CareerOS can call Codex CLI through \`career-os ai ...\` for profile review, requirement extraction, fit review, report summaries, application drafts, draft review, and interview prep.
+
+\`\`\`bash
+career-os ai doctor
+career-os ai profile-sync --dry-run
+career-os ai extract new --limit 5
+career-os ai review-fit <job_id>
+career-os ai summarize-report
+career-os ai draft <application_id>
+\`\`\`
+
+AI prompts and responses are saved under \`outputs/ai\`. Application AI responses are copied into the approved application workspace. CareerOS does not submit applications automatically.
 
 ## MVP Scope
 
@@ -2597,6 +3057,28 @@ Phase 1 creates a gated application workspace only. Full CV, cover letter, and i
 `;
 }
 
+function workflowAiMd() {
+  return `# Workflow: Codex AI
+
+Use Codex CLI only after the deterministic CareerOS data exists.
+
+\`\`\`bash
+career-os ai doctor
+career-os ai profile-sync --dry-run
+career-os ai extract new --limit 5
+career-os ai review-fit <job_id>
+career-os ai summarize-report
+career-os ai draft <application_id>
+career-os ai review-draft <application_id>
+career-os ai interview <application_id>
+\`\`\`
+
+Prompts and outputs are saved under \`outputs/ai\`. Application AI outputs are copied into the approved application workspace for manual review.
+
+Do not use AI output to bypass scoring, approval, or manual submission.
+`;
+}
+
 function workflowResetMd() {
   return `# Workflow: Reset
 
@@ -2672,6 +3154,50 @@ CareerOS replaces Claude Code slash commands with the \`career-os\` CLI.
 | \`job_search_tracker.csv\` | \`data/applications.csv\` |
 
 The original project is application-first. CareerOS is decision-first.
+`;
+}
+
+function codexCliIntegrationMd() {
+  return `# Codex CLI Integration
+
+CareerOS integrates Codex CLI through \`career-os ai ...\`.
+
+The deterministic pipeline remains responsible for import, normalization, dedupe, scoring, reporting, approvals, and tracker state. Codex is used only where language judgment helps.
+
+## Configuration
+
+\`\`\`json
+{
+  "provider": "codex-cli",
+  "enabled": true,
+  "command": "codex",
+  "model": "",
+  "sandbox": "workspace-write",
+  "approval": "never",
+  "output_dir": "outputs/ai",
+  "web_search": false,
+  "timeout_ms": 300000
+}
+\`\`\`
+
+## Commands
+
+- \`career-os ai doctor\`
+- \`career-os ai profile-sync [--dry-run]\`
+- \`career-os ai extract <job_id|new> [--limit 5] [--dry-run]\`
+- \`career-os ai review-fit <job_id> [--dry-run]\`
+- \`career-os ai summarize-report [--dry-run]\`
+- \`career-os ai draft <application_id|job_id> [--dry-run]\`
+- \`career-os ai review-draft <application_id|job_id> [--dry-run]\`
+- \`career-os ai interview <application_id|job_id> [--dry-run]\`
+
+## Safety Model
+
+- Every command writes the prompt to \`outputs/ai\`.
+- Codex responses are saved to \`outputs/ai\`.
+- Application commands also copy the response into the application workspace.
+- AI commands do not submit applications, contact employers, schedule meetings, or mutate scored jobs automatically.
+- Use \`--dry-run\` to inspect prompts without spending tokens.
 `;
 }
 

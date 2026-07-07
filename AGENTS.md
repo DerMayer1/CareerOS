@@ -14,6 +14,8 @@ CareerOS is not a bulk application bot. It is a decision system for remote job o
 - Do not invent candidate experience, compensation, credentials, work authorization, or company facts.
 - Prefer deterministic CLI commands for import, parsing, dedupe, normalization, salary conversion, sorting, and export.
 - Use AI judgment only for requirement extraction, fit analysis, red flags, interview prep, and application writing.
+- Use `career-os ai ...` as the Codex CLI integration surface. Do not call ad hoc AI flows when a CareerOS AI command exists.
+- Save AI prompts and outputs as reviewable local artifacts. Do not silently mutate scored jobs or application material based on AI output.
 - Keep score calculations auditable through component scores and `score_explanation`.
 - Reports must render existing data only. Do not fetch, rescore, or spend AI tokens during report generation.
 - Keep data in open local files: JSONL, JSON, CSV, Markdown, and PDF.
@@ -34,6 +36,7 @@ career-os extract
 career-os score
 career-os report
 career-os show top
+career-os ai summarize-report
 ```
 
 ## Application Gate
@@ -49,6 +52,22 @@ Application generation is gated:
 CareerOS must not submit applications automatically. It prepares local files and tracker state only. The user submits manually outside CareerOS.
 Drafting commands produce reviewable Markdown only and must not claim unsupported experience.
 Interview and follow-up commands prepare local notes and tracker dates only; they must not contact employers or schedule meetings automatically.
+
+## Codex CLI Layer
+
+Codex CLI is optional and configured by `config/ai.json`. The deterministic pipeline remains the source of truth for imports, normalization, dedupe, scoring, reports, approvals, and tracker status.
+
+Allowed AI entry points:
+
+- `career-os ai profile-sync`
+- `career-os ai extract <job_id|new>`
+- `career-os ai review-fit <job_id>`
+- `career-os ai summarize-report`
+- `career-os ai draft <application_id|job_id>`
+- `career-os ai review-draft <application_id|job_id>`
+- `career-os ai interview <application_id|job_id>`
+
+Use `--dry-run` when checking prompts or preserving tokens. Application AI commands require the normal `approve` and `apply` gate first.
 
 ## Claude Code Migration Map
 

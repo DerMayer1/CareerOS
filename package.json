@@ -18,6 +18,8 @@
     "score": "node bin/career-os.js score",
     "report": "node bin/career-os.js report",
     "profile:check": "node bin/career-os.js profile check",
+    "ai": "node bin/career-os.js ai",
+    "ai:doctor": "node bin/career-os.js ai doctor",
     "show:top": "node bin/career-os.js show top"
   },
   "engines": {
