@@ -37,7 +37,7 @@ career-os show top
 | `career-os normalize` | Convert raw jobs into the CareerOS job model |
 | `career-os dedupe` | Deduplicate normalized jobs and update seen state |
 | `career-os extract` | Extract deterministic requirements and job signals |
-| `career-os score` | Apply deterministic baseline scoring |
+| `career-os score` | Apply deterministic multidimensional scoring |
 | `career-os report` | Export CSV tables and Markdown report |
 | `career-os show top [limit]` | Print top apply/maybe roles |
 | `career-os show <table> [limit]` | Print an exported table |
@@ -88,3 +88,19 @@ career-os show top
 Use `--dry-run` to inspect results without writing raw jobs.
 
 Wellfound, Indeed Brazil, and Glassdoor Brazil are configured as manual search sources. They print search URLs and do not write fake job rows, because no low-risk public search API is configured for them.
+
+## Scoring
+
+`career-os score` writes component scores and explanations back to `data/jobs_normalized.json`:
+
+- `score_skills`
+- `score_experience`
+- `score_salary`
+- `score_remote`
+- `score_company`
+- `score_growth`
+- `score_application_friction`
+- `score_risk`
+- `score_explanation`
+
+Recommendations are based on fit, salary, remote compatibility, skill coverage, risk, and blocking red flags.

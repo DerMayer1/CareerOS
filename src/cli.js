@@ -250,7 +250,8 @@ function scoreJobs() {
   const config = readJson(PATHS.searchProfile, defaultSearchProfile());
   const weights = readJson(PATHS.scoringWeights, defaultScoringWeights());
   const profileText = readText(PATHS.candidateProfile);
-  const scored = jobs.map((job) => scoreJob(job, config, weights, profileText));
+  const profile = readJson(PATHS.candidateProfileJson, defaultCandidateProfileJson());
+  const scored = jobs.map((job) => scoreJob(job, config, weights, profileText, profile));
   fs.writeFileSync(PATHS.normalizedJobs, JSON.stringify(scored, null, 2) + "\n");
   console.log(`Scored ${scored.length} jobs.`);
 }
@@ -468,20 +469,28 @@ function normalizeJob(raw, entry) {
   };
 }
 
-function scoreJob(job, config, weights, profileText) {
-  const text = `${job.title} ${job.description}`.toLowerCase();
-  const profile = profileText.toLowerCase();
-  const targetKeywords = (config.keywords_required_any || []).map((item) => String(item).toLowerCase());
-  const requirementsInJob = targetKeywords.filter((keyword) => includesTerm(text, keyword));
-  const matched = requirementsInJob.filter((keyword) => includesTerm(profile, keyword));
-  const missing = requirementsInJob.filter((keyword) => !includesTerm(profile, keyword));
+function scoreJob(job, config, weights, profileText, profile) {
+  const required = job.requirements_required || [];
+  const matched = job.matched_requirements || [];
+  const partial = job.partial_matches || [];
+  const missing = job.missing_requirements || [];
 
-  const scoreSkills = requirementsInJob.length ? Math.round((matched.length / requirementsInJob.length) * 100) : 20;
-  const scoreExperience = scoreSeniority(job.seniority);
-  const scoreSalary = scoreSalaryCompatibility(job, config);
-  const scoreRemote = scoreRemoteCompatibility(job);
-  const scoreCompany = job.company_size !== "unknown" || job.company_stage !== "unknown" ? 70 : 50;
-  const scoreApplicationFriction = job.red_flags.some((flag) => flag.severity === "blocking") ? 20 : 75;
+  const skillScore = scoreSkillsDimension(job, profile, required, matched, partial);
+  const scoreSkills = skillScore.score;
+  const experienceScore = scoreExperienceDimension(job, profile);
+  const scoreExperience = experienceScore.score;
+  const salaryScore = scoreSalaryDimension(job, config, profile);
+  const scoreSalary = salaryScore.score;
+  const remoteScore = scoreRemoteDimension(job, profile);
+  const scoreRemote = remoteScore.score;
+  const companyScore = scoreCompanyDimension(job);
+  const scoreCompany = companyScore.score;
+  const growthScore = scoreGrowthDimension(job, profile);
+  const scoreGrowth = growthScore.score;
+  const frictionScore = scoreApplicationFrictionDimension(job);
+  const scoreApplicationFriction = frictionScore.score;
+  const riskScore = scoreRiskDimension(job);
+  const scoreRisk = riskScore.score;
 
   const scoreFit = Math.round(
     scoreSkills * ((weights.skills || 30) / 100) +
@@ -489,13 +498,13 @@ function scoreJob(job, config, weights, profileText) {
     scoreSalary * ((weights.salary || 15) / 100) +
     scoreRemote * ((weights.remote_compatibility || 15) / 100) +
     scoreCompany * ((weights.company_quality || 10) / 100) +
-    60 * ((weights.growth_potential || 5) / 100) +
+    scoreGrowth * ((weights.growth_potential || 5) / 100) +
     scoreApplicationFriction * ((weights.application_friction || 5) / 100)
   );
 
   return {
     ...job,
-    requirements_required: matched,
+    requirements_required: required,
     matched_requirements: matched,
     missing_requirements: missing,
     score_fit: scoreFit,
@@ -504,10 +513,128 @@ function scoreJob(job, config, weights, profileText) {
     score_salary: scoreSalary,
     score_remote: scoreRemote,
     score_company: scoreCompany,
+    score_growth: scoreGrowth,
     score_application_friction: scoreApplicationFriction,
-    recommendation: recommendationFor(job, scoreFit, scoreSalary, scoreRemote, scoreSkills),
-    notes: explanationFor(scoreFit, scoreSalary, scoreRemote, missing)
+    score_risk: scoreRisk,
+    score_explanation: {
+      skills: skillScore.explanation,
+      experience: experienceScore.explanation,
+      salary: salaryScore.explanation,
+      remote: remoteScore.explanation,
+      company: companyScore.explanation,
+      growth: growthScore.explanation,
+      application_friction: frictionScore.explanation,
+      risk: riskScore.explanation
+    },
+    recommendation: recommendationFor(job, scoreFit, scoreSalary, scoreRemote, scoreSkills, scoreRisk),
+    notes: explanationFor(scoreFit, scoreSalary, scoreRemote, missing, scoreRisk)
   };
+}
+
+function scoreSkillsDimension(job, profile, required, matched, partial) {
+  if (!required.length) {
+    return { score: 20, explanation: "No target skills extracted from the job description." };
+  }
+  const strong = matched.length;
+  const partialCount = partial.length;
+  const score = clampScore(Math.round(((strong + partialCount * 0.5) / required.length) * 100));
+  return {
+    score,
+    explanation: `${strong}/${required.length} required skills matched; ${partialCount} partial; missing: ${(job.missing_requirements || []).join(", ") || "none"}.`
+  };
+}
+
+function scoreExperienceDimension(job, profile) {
+  const seniority = String(job.seniority || "unknown").toLowerCase();
+  const years = job.extracted_signals?.years_experience_min;
+  const roleFamily = job.extracted_signals?.role_family || "unknown";
+  const targetFamilies = (profile.target_roles || []).join(" ").toLowerCase();
+  let score = scoreSeniority(seniority);
+  if (roleFamily !== "unknown" && targetFamilies.includes(roleFamily.replace(/_/g, " "))) score += 10;
+  if (years && years >= 8) score -= 5;
+  return {
+    score: clampScore(score),
+    explanation: `Seniority=${seniority}; minimum years=${years || "unknown"}; role family=${roleFamily}.`
+  };
+}
+
+function scoreSalaryDimension(job, config, profile) {
+  const minimum = Number(profile.salary_min_monthly_usd || config.salary_min_monthly_usd || 0);
+  const target = Number(profile.salary_target_monthly_usd || minimum * 1.5);
+  if (!job.salary_disclosed) {
+    return { score: 55, explanation: "Salary not disclosed; lightly penalized, not skipped by salary alone." };
+  }
+  if (!job.salary_monthly_usd_min) {
+    return { score: 50, explanation: "Salary was disclosed but could not be confidently normalized." };
+  }
+  if (minimum && job.salary_monthly_usd_min < minimum) {
+    return { score: 10, explanation: `Minimum normalized salary ${job.salary_monthly_usd_min} USD/month is below configured minimum ${minimum}.` };
+  }
+  if (target && job.salary_monthly_usd_min >= target) {
+    return { score: 95, explanation: `Minimum normalized salary ${job.salary_monthly_usd_min} USD/month meets target ${target}.` };
+  }
+  return { score: 80, explanation: `Salary is compatible: ${job.salary_monthly_usd_min || "unknown"}-${job.salary_monthly_usd_max || "unknown"} USD/month.` };
+}
+
+function scoreRemoteDimension(job, profile) {
+  const region = String(job.remote_region || "").toLowerCase();
+  const accepted = (profile.accepted_regions || []).map((item) => String(item).toLowerCase());
+  const auth = job.extracted_signals?.work_authorization || [];
+  if ((job.red_flags || []).some((flag) => /authorization|citizenship|US-only/i.test(flag.message))) {
+    return { score: 10, explanation: "Blocking authorization or location restriction detected." };
+  }
+  if (region === "remote_unknown") {
+    return { score: 60, explanation: "Remote role detected, but region restrictions are unknown." };
+  }
+  if (accepted.some((item) => item && region.includes(item))) {
+    return { score: 90, explanation: `Remote region ${job.remote_region} is accepted.` };
+  }
+  if (["worldwide", "latam", "brazil"].includes(region)) {
+    return { score: 85, explanation: `Remote region ${job.remote_region} is broadly compatible.` };
+  }
+  if (region === "europe") {
+    return { score: 45, explanation: "Europe-only may be viable only with eligibility and timezone review." };
+  }
+  if (auth.length) {
+    return { score: 35, explanation: `Work authorization signals require review: ${auth.join(", ")}.` };
+  }
+  return { score: 35, explanation: "Remote compatibility is unclear." };
+}
+
+function scoreCompanyDimension(job) {
+  let score = 50;
+  const facts = [];
+  if (job.company_size && job.company_size !== "unknown") { score += 10; facts.push(`size=${job.company_size}`); }
+  if (job.company_stage && job.company_stage !== "unknown") { score += 10; facts.push(`stage=${job.company_stage}`); }
+  if (job.company_industry && job.company_industry !== "unknown") { score += 5; facts.push(`industry=${job.company_industry}`); }
+  return { score: clampScore(score), explanation: facts.length ? facts.join("; ") : "Company metadata is mostly unknown." };
+}
+
+function scoreGrowthDimension(job, profile) {
+  const text = `${job.title} ${job.description}`.toLowerCase();
+  let score = 55;
+  if (/ai|llm|agent|automation|platform|developer tools|devtools/.test(text)) score += 20;
+  if (/legacy|maintenance only/.test(text)) score -= 15;
+  return { score: clampScore(score), explanation: `Growth signal score based on role/domain keywords: ${score}.` };
+}
+
+function scoreApplicationFrictionDimension(job) {
+  const text = `${job.description || ""}`.toLowerCase();
+  let score = 75;
+  if (/take-?home|technical test|coding challenge/.test(text)) score -= 20;
+  if (/video application|recorded video/.test(text)) score -= 20;
+  if (/workday|greenhouse|lever|ashby/.test(text)) score += 5;
+  if ((job.red_flags || []).some((flag) => flag.severity === "blocking")) score = Math.min(score, 25);
+  return { score: clampScore(score), explanation: `Application friction estimated from process language and blocking flags.` };
+}
+
+function scoreRiskDimension(job) {
+  const flags = job.red_flags || [];
+  const blocking = flags.filter((flag) => flag.severity === "blocking").length;
+  const warnings = flags.filter((flag) => flag.severity === "warning").length;
+  const infos = flags.filter((flag) => flag.severity === "info").length;
+  const score = clampScore(100 - blocking * 60 - warnings * 20 - infos * 5);
+  return { score, explanation: `${blocking} blocking, ${warnings} warning, ${infos} info red flags.` };
 }
 
 function extractJobSignals(job, profile, taxonomy) {
@@ -681,8 +808,8 @@ function normalizeSkill(skill) {
   return String(skill || "").trim().toLowerCase();
 }
 
-function recommendationFor(job, scoreFit, scoreSalary, scoreRemote, scoreSkills) {
-  if (job.red_flags.some((flag) => flag.severity === "blocking") || scoreRemote < 35 || scoreSalary < 25) return "skip";
+function recommendationFor(job, scoreFit, scoreSalary, scoreRemote, scoreSkills, scoreRisk) {
+  if (job.red_flags.some((flag) => flag.severity === "blocking") || scoreRemote < 35 || scoreSalary < 25 || scoreRisk < 35) return "skip";
   if (scoreSkills < 30) return scoreRemote >= 60 && scoreSalary >= 50 ? "watch" : "skip";
   if (scoreFit >= 75) return "apply";
   if (scoreFit >= 55) return "maybe";
@@ -690,8 +817,8 @@ function recommendationFor(job, scoreFit, scoreSalary, scoreRemote, scoreSkills)
   return "skip";
 }
 
-function explanationFor(scoreFit, scoreSalary, scoreRemote, missing) {
-  const parts = [`fit=${scoreFit}`, `salary=${scoreSalary}`, `remote=${scoreRemote}`];
+function explanationFor(scoreFit, scoreSalary, scoreRemote, missing, scoreRisk) {
+  const parts = [`fit=${scoreFit}`, `salary=${scoreSalary}`, `remote=${scoreRemote}`, `risk=${scoreRisk}`];
   if (missing.length) parts.push(`missing=${missing.slice(0, 5).join("|")}`);
   return parts.join("; ");
 }
@@ -711,6 +838,14 @@ function buildTables(jobs) {
 function toTableRow(job) {
   return {
     score_fit: job.score_fit,
+    score_skills: job.score_skills,
+    score_experience: job.score_experience,
+    score_salary: job.score_salary,
+    score_remote: job.score_remote,
+    score_company: job.score_company,
+    score_growth: job.score_growth,
+    score_application_friction: job.score_application_friction,
+    score_risk: job.score_risk,
     recommendation: job.recommendation,
     company: job.company,
     role_title: job.title,
@@ -728,8 +863,10 @@ function toTableRow(job) {
     source_site: job.source_site,
     posted_at: job.posted_at,
     matched_requirements: listCell(job.matched_requirements),
+    partial_matches: listCell(job.partial_matches),
     missing_requirements: listCell(job.missing_requirements),
     red_flags: listCell((job.red_flags || []).map((flag) => `${flag.severity}:${flag.message}`)),
+    score_notes: job.notes,
     job_url: job.source_url,
     apply_url: job.apply_url
   };
@@ -811,13 +948,12 @@ function normalizeSalary(raw, salaryRaw) {
   const period = inferSalaryPeriod(combined);
   const explicitMin = numberOrNull(raw.salary_min);
   const explicitMax = numberOrNull(raw.salary_max);
-  const numbers = [...String(combined).matchAll(/(?:\d{1,3}(?:[,.]\d{3})+|\d+)(?:[,.]\d+)?/g)]
-    .map((match) => Number(match[0].replace(/,/g, "")))
-    .filter((value) => Number.isFinite(value) && value > 0);
-  const min = explicitMin || numbers[0] || null;
-  const max = explicitMax || numbers[1] || min;
+  const parsedNumbers = parseSalaryNumbers(combined);
+  const min = explicitMin || parsedNumbers[0] || null;
+  const max = explicitMax || parsedNumbers[1] || min;
   const monthlyMin = min ? toMonthlyUsd(min, currency, period) : null;
   const monthlyMax = max ? toMonthlyUsd(max, currency, period) : monthlyMin;
+  const notes = salaryNotes(combined, min, max, period);
 
   return {
     min,
@@ -827,8 +963,42 @@ function normalizeSalary(raw, salaryRaw) {
     monthlyUsdMin: monthlyMin,
     monthlyUsdMax: monthlyMax,
     disclosed: Boolean(min),
-    confidence: min ? "medium" : "unknown"
+    confidence: salaryConfidence(combined, min, max),
+    notes
   };
+}
+
+function parseSalaryNumbers(text) {
+  const value = String(text || "").replace(/\bto\b/gi, "-");
+  const matches = [...value.matchAll(/(?:[$€£]|R\$)?\s*(\d+(?:[.,]\d+)?)\s*(k|K|mil|000)?/g)];
+  return matches
+    .map((match) => {
+      let number = Number(String(match[1]).replace(",", "."));
+      const suffix = String(match[2] || "").toLowerCase();
+      if (suffix === "k" || suffix === "mil" || suffix === "000") number *= 1000;
+      return number;
+    })
+    .filter((number) => Number.isFinite(number) && number > 0 && number < 10000000);
+}
+
+function salaryConfidence(text, min, max) {
+  const lower = String(text || "").toLowerCase();
+  if (!min) return "unknown";
+  if (/estimate|estimated|approx|about|up to|from/.test(lower)) return "low";
+  if (min && max && min !== max) return "high";
+  return "medium";
+}
+
+function salaryNotes(text, min, max, period) {
+  const lower = String(text || "").toLowerCase();
+  const notes = [];
+  if (!min) notes.push("salary_not_disclosed");
+  if (/ote/.test(lower)) notes.push("ote_included");
+  if (/equity|stock options|options/.test(lower)) notes.push("equity_mentioned");
+  if (/estimate|estimated|approx|about/.test(lower)) notes.push("estimated_range");
+  if (period) notes.push(`period_${period}`);
+  if (min && max && min === max) notes.push("single_value");
+  return notes;
 }
 
 function toMonthlyUsd(value, currency, period) {
@@ -910,11 +1080,29 @@ function inferRedFlags(location, description, salary) {
   if (/us-only|usa only|u\.s\. only|must be authorized to work in the us/.test(text)) {
     flags.push({ severity: "blocking", message: "US-only or US work authorization required" });
   }
-  if (/eu-only|must be based in europe/.test(text)) {
-    flags.push({ severity: "warning", message: "Europe-only restriction may block eligibility" });
+  if (/us citizenship|u\.s\. citizenship|security clearance/.test(text)) {
+    flags.push({ severity: "blocking", message: "Citizenship or clearance requirement" });
+  }
+  if (/eu-only|must be based in europe|right to work in europe|eu work authorization/.test(text)) {
+    flags.push({ severity: "warning", message: "Europe-only or EU authorization may block eligibility" });
+  }
+  if (/onsite only|on-site only|must be onsite|hybrid/.test(text) && !/remote/.test(text)) {
+    flags.push({ severity: "blocking", message: "Onsite or hybrid requirement without remote compatibility" });
+  }
+  if (/unpaid|volunteer/.test(text)) {
+    flags.push({ severity: "blocking", message: "Unpaid or volunteer role" });
+  }
+  if (/commission.?only/.test(text)) {
+    flags.push({ severity: "blocking", message: "Commission-only compensation" });
   }
   if (/rockstar|ninja|work hard play hard/.test(text)) {
     flags.push({ severity: "warning", message: "Low-quality hiring language" });
+  }
+  if (/take-?home|technical test|coding challenge/.test(text) && /before|prior to|first step/.test(text)) {
+    flags.push({ severity: "warning", message: "Test or take-home appears early in process" });
+  }
+  if (description && description.length < 250) {
+    flags.push({ severity: "warning", message: "Very short or generic job description" });
   }
   if (!salary.disclosed) {
     flags.push({ severity: "info", message: "Salary not disclosed" });
@@ -998,6 +1186,12 @@ function escapeRegex(value) {
 
 function unique(values) {
   return [...new Set((values || []).filter((value) => value != null && value !== ""))];
+}
+
+function clampScore(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 0;
+  return Math.max(0, Math.min(100, Math.round(number)));
 }
 
 function jsonParseError(text) {
