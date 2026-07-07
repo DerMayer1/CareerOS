@@ -48,9 +48,11 @@ career-os show top
 | `career-os apply <job_id>` | Create a gated manual application workspace |
 | `career-os applications list [limit]` | List tracked applications |
 | `career-os applications status <id> <status>` | Manually update application status |
+| `career-os applications followup <id> --date YYYY-MM-DD` | Set next manual follow-up date |
 | `career-os application plan <id>` | Regenerate application plan |
 | `career-os application cv-notes <id>` | Regenerate CV notes |
 | `career-os application draft <id>` | Generate message and cover letter drafts |
+| `career-os interview <id>` | Generate interview prep brief |
 | `career-os status` | Print current local state |
 | `career-os reset --data` | Clear local generated data |
 
@@ -147,6 +149,8 @@ career-os applications list
 career-os application plan <application_id>
 career-os application cv-notes <application_id>
 career-os application draft <application_id>
+career-os interview <application_id>
+career-os applications followup <application_id> --date YYYY-MM-DD
 career-os applications status <application_id> applied
 ```
 

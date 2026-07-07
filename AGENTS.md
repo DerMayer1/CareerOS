@@ -48,6 +48,7 @@ Application generation is gated:
 
 CareerOS must not submit applications automatically. It prepares local files and tracker state only. The user submits manually outside CareerOS.
 Drafting commands produce reviewable Markdown only and must not claim unsupported experience.
+Interview and follow-up commands prepare local notes and tracker dates only; they must not contact employers or schedule meetings automatically.
 
 ## Claude Code Migration Map
 

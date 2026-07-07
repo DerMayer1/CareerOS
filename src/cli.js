@@ -79,9 +79,11 @@ function main(args) {
   if (command === "profile" && args[1] === "check") return checkProfile();
   if (command === "applications" && args[1] === "list") return listApplications(args[2]);
   if (command === "applications" && args[1] === "status") return updateApplicationStatus(args[2], args[3]);
+  if (command === "applications" && args[1] === "followup") return updateApplicationFollowup(args[2], args.slice(3));
   if (command === "application" && args[1] === "plan") return generateApplicationArtifact(args[2], "plan");
   if (command === "application" && args[1] === "cv-notes") return generateApplicationArtifact(args[2], "cv-notes");
   if (command === "application" && args[1] === "draft") return generateApplicationArtifact(args[2], "draft");
+  if (command === "interview") return generateInterviewPrep(args[1]);
   if (command === "approve") return approveJob(args[1]);
   if (command === "apply") return applyJob(args[1]);
   if (command === "reset") return resetData(args.slice(1));
@@ -112,9 +114,11 @@ Usage:
   career-os profile check
   career-os applications list [limit]
   career-os applications status <application_id> <status>
+  career-os applications followup <application_id> --date YYYY-MM-DD
   career-os application plan <application_id|job_id>
   career-os application cv-notes <application_id|job_id>
   career-os application draft <application_id|job_id>
+  career-os interview <application_id|job_id>
   career-os show top [limit]
   career-os show gaps [limit]
   career-os show red-flags [limit]
@@ -481,6 +485,34 @@ function updateApplicationStatus(applicationId, status) {
   if (status === "applied" && !rows[index].applied_at) rows[index].applied_at = now;
   writeApplications(rows);
   console.log(`Updated ${rows[index].application_id} to ${status}.`);
+}
+
+function updateApplicationFollowup(applicationId, args) {
+  if (!isValidIdArg(applicationId)) throw new Error("Usage: career-os applications followup <application_id> --date YYYY-MM-DD");
+  const flags = parseFlags(args);
+  const date = flags.date || flags.next;
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(String(date))) {
+    throw new Error("Missing or invalid follow-up date. Usage: career-os applications followup <application_id> --date YYYY-MM-DD");
+  }
+  const rows = readCsvFile(PATHS.applications);
+  const index = rows.findIndex((row) => row.application_id === applicationId || row.job_id === applicationId);
+  if (index < 0) throw new Error(`Application not found: ${applicationId}`);
+  rows[index] = { ...rows[index], next_follow_up: date };
+  writeApplications(rows);
+  console.log(`Set next follow-up for ${rows[index].application_id} to ${date}.`);
+}
+
+function generateInterviewPrep(id) {
+  if (!isValidIdArg(id)) throw new Error("Usage: career-os interview <application_id|job_id>");
+  const context = getApplicationContext(id);
+  const { job, application } = context;
+  const dir = ensureApplicationDir(job, application);
+  const profile = readJson(PATHS.candidateProfileJson, defaultCandidateProfileJson());
+  const profileText = readText(PATHS.candidateProfile);
+  const filePath = path.join(dir, "interview-prep.md");
+  fs.writeFileSync(filePath, interviewPrepMarkdown(job, profile, profileText));
+  upsertApplication(job, application.status || "drafted", { application_dir: relative(dir) });
+  console.log(`Wrote ${relative(filePath)}`);
 }
 
 function generateApplicationArtifact(id, artifact) {
@@ -2022,20 +2054,70 @@ Sincerely,
 }
 
 function interviewPrepPlaceholderMarkdown(job) {
+  return interviewPrepMarkdown(job, readJson(PATHS.candidateProfileJson, defaultCandidateProfileJson()), readText(PATHS.candidateProfile));
+}
+
+function interviewPrepMarkdown(job, profile, profileText) {
+  const matched = job.matched_requirements || [];
+  const missing = job.missing_requirements || [];
+  const partial = job.partial_matches || [];
   return `# Interview Prep
 
-Interview preparation belongs to a later phase. This placeholder records the current fit signals.
+This is a reviewable preparation brief. CareerOS does not schedule, message, or submit anything automatically.
 
-## Fit Signals
+## Role Snapshot
 
+- Company: ${job.company}
+- Role: ${job.title}
+- Recommendation: ${job.recommendation}
 - Score: ${job.score_fit}
-- Matched requirements: ${listCell(job.matched_requirements) || "none captured"}
-- Partial matches: ${listCell(job.partial_matches) || "none captured"}
-- Missing requirements: ${listCell(job.missing_requirements) || "none captured"}
+- Remote: ${job.remote_region || "unknown"} (${job.timezone_overlap || "unknown"} timezone overlap)
+- Salary: ${job.salary_monthly_usd_min || "unknown"}-${job.salary_monthly_usd_max || "unknown"} USD/month
+- Source: ${job.source_site}
+- Job URL: ${job.source_url}
 
-## Questions To Prepare
+## Fit Narrative
 
-${bulletList((job.missing_requirements || []).slice(0, 6).map((skill) => `How to discuss gap or learning plan for ${skill}`))}
+${buildPitch(job, profile)}
+
+## Strong Talking Points
+
+${bulletList(matched.map((skill) => `${skill}: prepare one concrete example from your real experience.`))}
+
+## Gaps To Handle Honestly
+
+${bulletList(missing.map((skill) => `${skill}: do not claim mastery; prepare a learning plan or adjacent experience.`))}
+
+## Partial Matches
+
+${bulletList(partial.map((skill) => `${skill}: describe as adjacent, learning, or limited exposure only if true.`))}
+
+## Likely Questions
+
+${bulletList(likelyInterviewQuestions(job))}
+
+## STAR Answer Outlines
+
+${starOutlines(job)}
+
+## Questions For The Interviewer
+
+${bulletList(interviewerQuestions(job))}
+
+## Negotiation Notes
+
+- Minimum target from profile: ${profile.salary_min_monthly_usd || "unknown"} USD/month.
+- Target compensation from profile: ${profile.salary_target_monthly_usd || "unknown"} USD/month.
+- Clarify contract type: ${job.contract_type || "unknown"}.
+- Clarify remote restrictions and work authorization before investing in long process steps.
+
+## Risks To Validate
+
+${bulletList((job.red_flags || []).map((flag) => `${flag.severity}: ${flag.message}`))}
+
+## Profile Review Reminder
+
+${profileText.trim() ? "Review profile/candidate-profile.md for concrete examples before the interview." : "Markdown profile is still sparse. Add concrete examples before the interview."}
 `;
 }
 
@@ -2067,6 +2149,51 @@ function cvEmphasis(job, profile) {
   for (const skill of job.partial_matches || []) items.push(`Mention ${skill} only as adjacent or learning context.`);
   for (const skill of job.missing_requirements || []) items.push(`Do not claim ${skill}; prepare a gap explanation if needed.`);
   return items;
+}
+
+function likelyInterviewQuestions(job) {
+  const questions = [
+    `Walk me through your experience relevant to ${job.title}.`,
+    `Why are you interested in ${job.company}?`,
+    "How do you approach ambiguous technical requirements?",
+    "Tell me about a project where you shipped production-ready software.",
+    "How do you communicate tradeoffs with product or business stakeholders?"
+  ];
+  for (const skill of (job.matched_requirements || []).slice(0, 4)) {
+    questions.push(`Describe a concrete project where you used ${skill}.`);
+  }
+  for (const skill of (job.missing_requirements || []).slice(0, 3)) {
+    questions.push(`The role mentions ${skill}. What is your current level and learning plan?`);
+  }
+  if ((job.red_flags || []).some((flag) => /Salary not disclosed/i.test(flag.message))) {
+    questions.push("What is the expected compensation range for this role?");
+  }
+  return questions;
+}
+
+function starOutlines(job) {
+  const skills = (job.matched_requirements || []).slice(0, 3);
+  if (!skills.length) {
+    return "Prepare at least two STAR stories from real projects before the interview.";
+  }
+  return skills.map((skill) => `### ${skill}
+
+- Situation: Choose a real project where ${skill} mattered.
+- Task: Explain your responsibility and constraints.
+- Action: Describe the concrete implementation decisions you made.
+- Result: Quantify or clearly state the outcome.
+`).join("\n");
+}
+
+function interviewerQuestions(job) {
+  return [
+    "What does success look like in the first 90 days?",
+    "Which parts of the stack or product are most urgent for this role?",
+    "How is remote collaboration structured across time zones?",
+    "What is the interview process after this step?",
+    "Are there any work authorization or country restrictions I should confirm now?",
+    "What compensation range is budgeted for this role?"
+  ];
 }
 
 function bulletList(items) {

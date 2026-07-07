@@ -1,5 +1,13 @@
 # Interview Prep
 
-Interview preparation belongs to a later phase.
+Use this template to structure:
 
-Use this template to structure questions, STAR outlines, gaps, and negotiation notes.
+- Role snapshot
+- Fit narrative
+- Strong talking points
+- Gaps to handle honestly
+- Likely questions
+- STAR answer outlines
+- Questions for the interviewer
+- Negotiation notes
+- Risks to validate
