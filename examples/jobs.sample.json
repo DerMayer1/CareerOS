@@ -1,0 +1,26 @@
+[
+  {
+    "source_site": "manual",
+    "source_url": "https://example.com/jobs/senior-full-stack-ai",
+    "apply_url": "https://example.com/apply/senior-full-stack-ai",
+    "title": "Senior Full Stack Engineer, AI Tools",
+    "company": "Example AI",
+    "location": "Remote - LATAM",
+    "employment_type": "full-time",
+    "salary": "USD 7000-10000 / month",
+    "posted_at": "2026-07-07",
+    "description": "We are hiring a senior full stack engineer in LATAM to build AI automation tools with TypeScript, Python, backend systems, and LLM integrations."
+  },
+  {
+    "source_site": "manual",
+    "source_url": "https://example.com/jobs/us-only-backend",
+    "apply_url": "https://example.com/apply/us-only-backend",
+    "title": "Backend Engineer",
+    "company": "US Only Co",
+    "location": "Remote - United States only",
+    "employment_type": "full-time",
+    "salary": "USD 90000 / year",
+    "posted_at": "2026-07-07",
+    "description": "Remote role, but candidates must be authorized to work in the US. Python backend role."
+  }
+]

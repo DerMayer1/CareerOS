@@ -1,0 +1,25 @@
+{
+  "name": "career-os",
+  "version": "0.1.0",
+  "description": "Local-first CLI radar for remote job opportunities.",
+  "type": "commonjs",
+  "bin": {
+    "career-os": "bin/career-os.js",
+    "remote-radar": "bin/career-os.js"
+  },
+  "scripts": {
+    "start": "node bin/career-os.js",
+    "init": "node bin/career-os.js init",
+    "status": "node bin/career-os.js status",
+    "normalize": "node bin/career-os.js normalize",
+    "dedupe": "node bin/career-os.js dedupe",
+    "score": "node bin/career-os.js score",
+    "report": "node bin/career-os.js report",
+    "profile:check": "node bin/career-os.js profile check",
+    "show:top": "node bin/career-os.js show top"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "UNLICENSED"
+}

@@ -1,0 +1,6 @@
+node_modules/
+data/jobs_raw.jsonl
+data/jobs_normalized.json
+data/seen_jobs.json
+data/applications.csv
+outputs/

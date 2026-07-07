@@ -1,0 +1,35 @@
+{
+  "locations": [
+    "Remote",
+    "LATAM",
+    "Brazil",
+    "Europe",
+    "United States"
+  ],
+  "remote_modes": [
+    "remote"
+  ],
+  "job_age_days": 14,
+  "target_roles": [
+    "AI Engineer",
+    "Full Stack Engineer",
+    "Backend Engineer",
+    "Developer Tools Engineer",
+    "AI Product Engineer"
+  ],
+  "keywords_required_any": [
+    "AI",
+    "LLM",
+    "automation",
+    "backend",
+    "typescript",
+    "python"
+  ],
+  "keywords_excluded": [
+    "unpaid",
+    "volunteer",
+    "onsite only"
+  ],
+  "salary_min_monthly_usd": 4000,
+  "timezone": "America/Sao_Paulo"
+}
