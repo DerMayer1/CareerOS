@@ -15,6 +15,7 @@ CareerOS is not a bulk application bot. It is a decision system for remote job o
 - Prefer deterministic CLI commands for import, parsing, dedupe, normalization, salary conversion, sorting, and export.
 - Use AI judgment only for requirement extraction, fit analysis, red flags, interview prep, and application writing.
 - Keep score calculations auditable through component scores and `score_explanation`.
+- Reports must render existing data only. Do not fetch, rescore, or spend AI tokens during report generation.
 - Keep data in open local files: JSONL, JSON, CSV, Markdown, and PDF.
 - Mark uncertain data as `unknown`. Do not fill gaps with guesses.
 - Treat token economy as a product requirement.

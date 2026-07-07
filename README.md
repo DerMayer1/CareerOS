@@ -40,7 +40,10 @@ career-os show top
 | `career-os score` | Apply deterministic multidimensional scoring |
 | `career-os report` | Export CSV tables and Markdown report |
 | `career-os show top [limit]` | Print top apply/maybe roles |
+| `career-os show gaps [limit]` | Print skill gap heatmap |
+| `career-os show red-flags [limit]` | Print red flags table |
 | `career-os show <table> [limit]` | Print an exported table |
+| `career-os explain <job_id>` | Explain one scored job |
 | `career-os approve <job_id>` | Mark a scored job as ready to apply |
 | `career-os apply <job_id>` | Create a gated application workspace |
 | `career-os status` | Print current local state |
@@ -104,3 +107,26 @@ Wellfound, Indeed Brazil, and Glassdoor Brazil are configured as manual search s
 - `score_explanation`
 
 Recommendations are based on fit, salary, remote compatibility, skill coverage, risk, and blocking red flags.
+
+## Decision Reports
+
+`career-os report` exports decision tables:
+
+- `top_matches.csv`
+- `high_salary_medium_fit.csv`
+- `easy_wins.csv`
+- `stretch_roles.csv`
+- `skip.csv`
+- `skill_gap_heatmap.csv`
+- `red_flags.csv`
+- `salary_transparency.csv`
+- `remote_fit.csv`
+- `best_next_actions.csv`
+
+Useful commands:
+
+```bash
+career-os show gaps
+career-os show red-flags
+career-os explain <job_id>
+```

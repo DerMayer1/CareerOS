@@ -49,6 +49,9 @@ function main(args) {
   if (command === "reset") return resetData(args.slice(1));
   if (command === "show" && args[1] === "top") return showTop(args[2]);
   if (command === "show" && args[1] === "extracted") return showExtracted(args[2]);
+  if (command === "show" && args[1] === "gaps") return showTable("skill_gap_heatmap", args[2]);
+  if (command === "show" && args[1] === "red-flags") return showTable("red_flags", args[2]);
+  if (command === "explain") return explainJob(args[1]);
   if (command === "show" && args[1]) return showTable(args[1], args[2]);
 
   throw new Error(`Unknown command: ${args.join(" ")}`);
@@ -70,7 +73,10 @@ Usage:
   career-os status
   career-os profile check
   career-os show top [limit]
+  career-os show gaps [limit]
+  career-os show red-flags [limit]
   career-os show <table-name> [limit]
+  career-os explain <job_id>
   career-os approve <job_id>
   career-os apply <job_id>
   career-os reset --data
@@ -296,13 +302,55 @@ function showTop(limitArg) {
 }
 
 function showTable(tableName, limitArg) {
-  const allowed = new Set(["top_matches", "high_salary_medium_fit", "easy_wins", "stretch_roles", "skip", "skill_gap_heatmap"]);
+  const allowed = new Set(["top_matches", "high_salary_medium_fit", "easy_wins", "stretch_roles", "skip", "skill_gap_heatmap", "red_flags", "salary_transparency", "remote_fit", "best_next_actions"]);
   if (!allowed.has(tableName)) throw new Error(`Unknown table: ${tableName}`);
   const limit = Math.max(1, Number(limitArg || 25));
   const tablePath = path.join(PATHS.tables, `${tableName}.csv`);
   if (!fs.existsSync(tablePath)) throw new Error(`Missing ${relative(tablePath)}. Run: career-os report`);
   const rows = fs.readFileSync(tablePath, "utf8").trim().split(/\r?\n/);
   console.log(rows.slice(0, limit + 1).join("\n"));
+}
+
+function explainJob(jobId) {
+  if (!jobId) throw new Error("Missing job id. Usage: career-os explain <job_id>");
+  const jobs = readJson(PATHS.normalizedJobs, []);
+  const job = jobs.find((item) => item.id === jobId);
+  if (!job) throw new Error(`Job not found: ${jobId}`);
+  const lines = [
+    `# ${job.company} - ${job.title}`,
+    "",
+    `- ID: ${job.id}`,
+    `- Recommendation: ${job.recommendation}`,
+    `- Score: ${job.score_fit}`,
+    `- Source: ${job.source_site}`,
+    `- URL: ${job.source_url}`,
+    "",
+    "## Component Scores",
+    "",
+    `- Skills: ${job.score_skills}`,
+    `- Experience: ${job.score_experience}`,
+    `- Salary: ${job.score_salary}`,
+    `- Remote: ${job.score_remote}`,
+    `- Company: ${job.score_company}`,
+    `- Growth: ${job.score_growth}`,
+    `- Application friction: ${job.score_application_friction}`,
+    `- Risk: ${job.score_risk}`,
+    "",
+    "## Explanation",
+    "",
+    ...Object.entries(job.score_explanation || {}).map(([key, value]) => `- ${key}: ${value}`),
+    "",
+    "## Requirements",
+    "",
+    `- Matched: ${listCell(job.matched_requirements) || "none"}`,
+    `- Partial: ${listCell(job.partial_matches) || "none"}`,
+    `- Missing: ${listCell(job.missing_requirements) || "none"}`,
+    "",
+    "## Red Flags",
+    "",
+    ...((job.red_flags || []).length ? (job.red_flags || []).map((flag) => `- ${flag.severity}: ${flag.message}`) : ["- none"])
+  ];
+  console.log(lines.join("\n"));
 }
 
 function showExtracted(limitArg) {
@@ -831,7 +879,11 @@ function buildTables(jobs) {
     easy_wins: sorted.filter((job) => job.score_skills >= 80 && job.score_application_friction >= 70).map(toTableRow),
     stretch_roles: sorted.filter((job) => job.recommendation === "maybe").map(toTableRow),
     skip: sorted.filter((job) => job.recommendation === "skip").map(toTableRow),
-    skill_gap_heatmap: buildSkillGapHeatmap(sorted)
+    skill_gap_heatmap: buildSkillGapHeatmap(sorted),
+    red_flags: buildRedFlagsTable(sorted),
+    salary_transparency: buildSalaryTransparencyTable(sorted),
+    remote_fit: buildRemoteFitTable(sorted),
+    best_next_actions: buildBestNextActions(sorted)
   };
 }
 
@@ -889,8 +941,93 @@ function buildSkillGapHeatmap(jobs) {
     }));
 }
 
+function buildRedFlagsTable(jobs) {
+  return jobs.flatMap((job) => (job.red_flags || []).map((flag) => ({
+    severity: flag.severity,
+    message: flag.message,
+    recommendation: job.recommendation,
+    score_fit: job.score_fit,
+    company: job.company,
+    role_title: job.title,
+    source_site: job.source_site,
+    job_url: job.source_url
+  }))).sort((a, b) => severityRank(a.severity) - severityRank(b.severity) || (b.score_fit || 0) - (a.score_fit || 0));
+}
+
+function buildSalaryTransparencyTable(jobs) {
+  return jobs.map((job) => ({
+    salary_disclosed: Boolean(job.salary_disclosed),
+    salary_confidence: job.salary_confidence,
+    salary_notes: listCell(job.salary_notes),
+    salary_monthly_usd_min: job.salary_monthly_usd_min,
+    salary_monthly_usd_max: job.salary_monthly_usd_max,
+    score_salary: job.score_salary,
+    recommendation: job.recommendation,
+    company: job.company,
+    role_title: job.title,
+    source_site: job.source_site,
+    job_url: job.source_url
+  })).sort((a, b) => Number(b.salary_disclosed) - Number(a.salary_disclosed) || (b.salary_monthly_usd_min || 0) - (a.salary_monthly_usd_min || 0));
+}
+
+function buildRemoteFitTable(jobs) {
+  return jobs.map((job) => ({
+    score_remote: job.score_remote,
+    remote_region: job.remote_region,
+    timezone_overlap: job.timezone_overlap,
+    work_authorization: listCell(job.extracted_signals?.work_authorization),
+    recommendation: job.recommendation,
+    company: job.company,
+    role_title: job.title,
+    source_site: job.source_site,
+    job_url: job.source_url
+  })).sort((a, b) => (b.score_remote || 0) - (a.score_remote || 0));
+}
+
+function buildBestNextActions(jobs) {
+  return jobs.slice(0, 20).map((job) => ({
+    action: nextActionFor(job),
+    recommendation: job.recommendation,
+    score_fit: job.score_fit,
+    company: job.company,
+    role_title: job.title,
+    reason: nextActionReason(job),
+    job_id: job.id,
+    job_url: job.source_url
+  }));
+}
+
+function severityRank(severity) {
+  if (severity === "blocking") return 0;
+  if (severity === "warning") return 1;
+  return 2;
+}
+
+function nextActionFor(job) {
+  if (job.recommendation === "apply") return "approve_for_application";
+  if (job.recommendation === "maybe") return "manual_review";
+  if (job.recommendation === "watch") return "save_or_monitor";
+  return "ignore";
+}
+
+function nextActionReason(job) {
+  if ((job.red_flags || []).some((flag) => flag.severity === "blocking")) return "blocking red flag";
+  if ((job.missing_requirements || []).length) return `missing ${job.missing_requirements.slice(0, 3).join(", ")}`;
+  if (!job.salary_disclosed) return "salary not disclosed";
+  if (job.score_remote < 60) return "remote fit unclear";
+  return job.notes || "review score details";
+}
+
 function reportMarkdown(today, jobs, tables) {
-  const top = tables.top_matches.slice(0, 10);
+  const ranked = [...jobs].sort((a, b) => (b.score_fit || 0) - (a.score_fit || 0));
+  const best = ranked.find((job) => ["apply", "maybe"].includes(job.recommendation)) || ranked[0];
+  const maybes = ranked.filter((job) => job.recommendation === "maybe").slice(0, 5).map(toTableRow);
+  const watch = ranked.filter((job) => job.recommendation === "watch").slice(0, 5).map(toTableRow);
+  const skips = tables.skip.slice(0, 8);
+  const highSalary = tables.high_salary_medium_fit.slice(0, 5);
+  const gaps = tables.skill_gap_heatmap.slice(0, 10);
+  const flags = tables.red_flags.slice(0, 10);
+  const actions = tables.best_next_actions.slice(0, 10);
   return `# Remote Radar - ${today}
 
 ## Summary
@@ -902,16 +1039,53 @@ function reportMarkdown(today, jobs, tables) {
 - Stretch roles: ${tables.stretch_roles.length}
 - Skips: ${tables.skip.length}
 
+## Best Opportunity
+
+${best ? bestOpportunityMarkdown(best) : "_No scored jobs yet._"}
+
 ## Top Matches
 
-${markdownTable(top.slice(0, 10), ["score_fit", "company", "role_title", "salary_monthly_usd_min", "remote_region", "source_site", "recommendation"])}
+${markdownTable(tables.top_matches.slice(0, 10), ["score_fit", "company", "role_title", "salary_monthly_usd_min", "remote_region", "source_site", "recommendation"])}
+
+## Manual Review
+
+${markdownTable(maybes, ["score_fit", "company", "role_title", "score_skills", "score_remote", "score_risk", "recommendation"])}
+
+## Watch
+
+${markdownTable(watch, ["score_fit", "company", "role_title", "score_skills", "score_remote", "score_risk", "recommendation"])}
+
+## High Salary / Medium Fit
+
+${markdownTable(highSalary, ["score_fit", "company", "role_title", "salary_monthly_usd_min", "salary_monthly_usd_max", "remote_region", "recommendation"])}
+
+## Main Skill Gaps
+
+${markdownTable(gaps, ["skill", "occurrences_in_good_jobs", "current_coverage", "action"])}
+
+## Red Flags
+
+${markdownTable(flags, ["severity", "message", "company", "role_title", "recommendation"])}
+
+## Skips
+
+${markdownTable(skips, ["score_fit", "company", "role_title", "red_flags", "score_notes"])}
 
 ## Next Actions
 
-1. Review top matches manually.
-2. Approve only jobs that are worth applying to.
-3. Generate application material only for approved jobs.
+${markdownTable(actions, ["action", "recommendation", "score_fit", "company", "role_title", "reason"])}
 `;
+}
+
+function bestOpportunityMarkdown(job) {
+  return `**${job.company} - ${job.title}** is currently the strongest visible opportunity.
+
+- Score: ${job.score_fit}
+- Recommendation: ${job.recommendation}
+- Salary: ${job.salary_monthly_usd_min || "unknown"}-${job.salary_monthly_usd_max || "unknown"} USD/month
+- Remote: ${job.remote_region || "unknown"} (${job.timezone_overlap || "unknown"} timezone overlap)
+- Main reason: ${job.notes || "review component scores"}
+- Job ID: ${job.id}`;
 }
 
 function scoreSeniority(seniority) {
