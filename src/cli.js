@@ -8,8 +8,10 @@ const { printAiHelp, printHelp } = require("./cli/help");
 const { createProjectPaths } = require("./core/paths");
 const { buildTables, scoreJob, toTableRow } = require("./scoring/engine");
 const { buildManualSearchUrl, searchProvider } = require("./sources/providers");
+const { createFileStore } = require("./storage/file-store");
 
 const { ROOT, OUTPUTS_DIR, PATHS } = createProjectPaths(process.cwd());
+const store = createFileStore({ paths: PATHS, root: ROOT });
 
 function main(args) {
   return dispatchCommand(args, {
@@ -122,7 +124,7 @@ async function searchJobs(args) {
     return;
   }
 
-  appendRawJobs(allJobs, { source: sourceName, query: flags.query || "", imported_via: "search" });
+  store.appendRawJobs(allJobs, { source: sourceName, query: flags.query || "", imported_via: "search" });
   if (manualLinks.length) {
     for (const link of manualLinks) console.log(`${link.source}: ${link.url}`);
   }
@@ -133,7 +135,7 @@ async function searchSource(name, source, flags, config) {
   const query = String(flags.query || "");
   const limit = Math.max(1, Math.min(Number(flags.limit || config.default_limit || 25), source.max_limit || 100));
   const cacheKey = stableId([name, query, limit, flags.days || "", flags.location || ""]);
-  const cache = readJson(PATHS.sourceCache, { searches: {} });
+  const cache = store.readSourceCache();
   const cacheTtlHours = Number(config.cache_ttl_hours || 6);
   const cached = cache.searches[cacheKey];
   if (!flags["no-cache"] && cached && Date.now() - Date.parse(cached.fetched_at) < cacheTtlHours * 60 * 60 * 1000) {
@@ -143,15 +145,8 @@ async function searchSource(name, source, flags, config) {
   const jobs = await searchProvider(name, source, { query, limit, flags });
 
   cache.searches[cacheKey] = { source: name, query, limit, fetched_at: new Date().toISOString(), jobs };
-  fs.writeFileSync(PATHS.sourceCache, JSON.stringify(cache, null, 2) + "\n");
+  store.writeSourceCache(cache);
   return jobs.slice(0, limit);
-}
-
-function appendRawJobs(jobs, meta) {
-  if (!jobs.length) return;
-  const now = new Date().toISOString();
-  const lines = jobs.map((job) => JSON.stringify({ imported_at: now, ...meta, raw: job }));
-  fs.appendFileSync(PATHS.rawJobs, lines.join("\n") + "\n");
 }
 
 function importJobs(filePath) {
@@ -163,56 +158,54 @@ function importJobs(filePath) {
   const jobs = ext === ".csv" ? parseCsv(text) : parseJsonOrJsonl(text);
   if (!jobs.length) throw new Error("No jobs found in input file.");
 
-  const now = new Date().toISOString();
-  const lines = jobs.map((job) => JSON.stringify({ imported_at: now, source_file: absolute, raw: job }));
-  fs.appendFileSync(PATHS.rawJobs, lines.join("\n") + "\n");
+  store.appendRawJobs(jobs, { source_file: absolute });
   console.log(`Imported ${jobs.length} raw jobs into ${relative(PATHS.rawJobs)}.`);
 }
 
 function normalizeJobs() {
   ensureDirs();
-  const rawEntries = readJsonl(PATHS.rawJobs);
+  const rawEntries = store.readRawJobs();
   const normalized = rawEntries.map((entry) => normalizeJob(entry.raw || entry, entry));
   const unique = dedupeById(normalized);
-  fs.writeFileSync(PATHS.normalizedJobs, JSON.stringify(unique, null, 2) + "\n");
-  updateSeenJobs(unique);
+  store.writeNormalizedJobs(unique);
+  store.updateSeenJobs(unique);
   console.log(`Normalized ${unique.length} unique jobs into ${relative(PATHS.normalizedJobs)}.`);
 }
 
 function dedupeJobs() {
   ensureDirs();
-  const jobs = readJson(PATHS.normalizedJobs, []);
+  const jobs = store.readNormalizedJobs();
   const unique = dedupeById(jobs);
-  fs.writeFileSync(PATHS.normalizedJobs, JSON.stringify(unique, null, 2) + "\n");
-  updateSeenJobs(unique);
+  store.writeNormalizedJobs(unique);
+  store.updateSeenJobs(unique);
   console.log(`Deduped ${jobs.length} normalized jobs down to ${unique.length}.`);
 }
 
 function extractJobs() {
   ensureDirs();
-  const jobs = readJson(PATHS.normalizedJobs, []);
+  const jobs = store.readNormalizedJobs();
   const profile = readJson(PATHS.candidateProfileJson, defaultCandidateProfileJson());
   const taxonomy = readJson(PATHS.skillTaxonomy, defaultSkillTaxonomy());
   const extracted = jobs.map((job) => extractJobSignals(job, profile, taxonomy));
-  fs.writeFileSync(PATHS.normalizedJobs, JSON.stringify(extracted, null, 2) + "\n");
+  store.writeNormalizedJobs(extracted);
   console.log(`Extracted deterministic signals for ${extracted.length} jobs.`);
 }
 
 function scoreJobs() {
   ensureDirs();
-  const jobs = readJson(PATHS.normalizedJobs, []);
+  const jobs = store.readNormalizedJobs();
   const config = readJson(PATHS.searchProfile, defaultSearchProfile());
   const weights = readJson(PATHS.scoringWeights, defaultScoringWeights());
   const profileText = readText(PATHS.candidateProfile);
   const profile = readJson(PATHS.candidateProfileJson, defaultCandidateProfileJson());
   const scored = jobs.map((job) => scoreJob(job, config, weights, profileText, profile));
-  fs.writeFileSync(PATHS.normalizedJobs, JSON.stringify(scored, null, 2) + "\n");
+  store.writeNormalizedJobs(scored);
   console.log(`Scored ${scored.length} jobs.`);
 }
 
 function generateReport() {
   ensureDirs();
-  const jobs = readJson(PATHS.normalizedJobs, []);
+  const jobs = store.readNormalizedJobs();
   const scored = jobs.filter((job) => Number.isFinite(job.score_fit));
   const tables = buildTables(scored);
   for (const [name, rows] of Object.entries(tables)) {
@@ -236,7 +229,7 @@ function runPipeline(args) {
 
 function showTop(limitArg) {
   const limit = Math.max(1, Number(limitArg || 10));
-  const jobs = readJson(PATHS.normalizedJobs, [])
+  const jobs = store.readNormalizedJobs()
     .filter((job) => job.recommendation === "apply" || job.recommendation === "maybe")
     .sort((a, b) => (b.score_fit || 0) - (a.score_fit || 0))
     .slice(0, limit);
@@ -261,7 +254,7 @@ function showTable(tableName, limitArg) {
 
 function explainJob(jobId) {
   if (!jobId) throw new Error("Missing job id. Usage: career-os explain <job_id>");
-  const jobs = readJson(PATHS.normalizedJobs, []);
+  const jobs = store.readNormalizedJobs();
   const job = jobs.find((item) => item.id === jobId);
   if (!job) throw new Error(`Job not found: ${jobId}`);
   const lines = [
@@ -303,7 +296,7 @@ function explainJob(jobId) {
 
 function showExtracted(limitArg) {
   const limit = Math.max(1, Number(limitArg || 10));
-  const jobs = readJson(PATHS.normalizedJobs, []).slice(0, limit).map((job) => ({
+  const jobs = store.readNormalizedJobs().slice(0, limit).map((job) => ({
     id: job.id,
     company: job.company,
     role_title: job.title,
@@ -327,9 +320,9 @@ function showExtracted(limitArg) {
 
 function showStatus() {
   ensureDirs();
-  const rawCount = readJsonl(PATHS.rawJobs).length;
-  const jobs = readJson(PATHS.normalizedJobs, []);
-  const applications = readCsvFile(PATHS.applications);
+  const rawCount = store.readRawJobs().length;
+  const jobs = store.readNormalizedJobs();
+  const applications = store.readApplications();
   const counts = countBy(jobs, "recommendation");
   const status = {
     raw_jobs: rawCount,
@@ -432,7 +425,7 @@ function aiExtract(args) {
   if (!target) throw new Error("Usage: career-os ai extract <job_id|new> [--limit 5] [--dry-run]");
   const flags = parseFlags(args.slice(1));
   const limit = Math.max(1, Math.min(Number(flags.limit || 5), 20));
-  const jobs = readJson(PATHS.normalizedJobs, []);
+  const jobs = store.readNormalizedJobs();
   const selected = target === "new"
     ? jobs.filter((job) => !job.extracted_signals || !Object.keys(job.extracted_signals || {}).length).slice(0, limit)
     : jobs.filter((job) => job.id === target).slice(0, limit);
@@ -692,7 +685,7 @@ function copyAiOutputToApplication(result, dir, fileName, flags) {
 }
 
 function findJob(jobId) {
-  const jobs = readJson(PATHS.normalizedJobs, []);
+  const jobs = store.readNormalizedJobs();
   const job = jobs.find((item) => item.id === jobId);
   if (!job) throw new Error(`Job not found: ${jobId}`);
   return job;
@@ -752,7 +745,7 @@ function shellQuote(value) {
 function listApplications(limitArg) {
   ensureDirs();
   const limit = Math.max(1, Number(limitArg || 25));
-  const rows = readCsvFile(PATHS.applications).slice(0, limit);
+  const rows = store.readApplications().slice(0, limit);
   if (!rows.length) {
     console.log("No applications tracked yet.");
     return;
@@ -765,14 +758,14 @@ function updateApplicationStatus(applicationId, status) {
   if (!APPLICATION_STATUSES.has(status)) {
     throw new Error(`Invalid status: ${status}. Valid statuses: ${[...APPLICATION_STATUSES].join(", ")}`);
   }
-  const rows = readCsvFile(PATHS.applications);
+  const rows = store.readApplications();
   const index = rows.findIndex((row) => row.application_id === applicationId || row.job_id === applicationId);
   if (index < 0) throw new Error(`Application not found: ${applicationId}`);
   const now = new Date().toISOString();
   rows[index] = { ...rows[index], status };
   if (status === "drafted" && !rows[index].drafted_at) rows[index].drafted_at = now;
   if (status === "applied" && !rows[index].applied_at) rows[index].applied_at = now;
-  writeApplications(rows);
+  store.writeApplications(rows);
   console.log(`Updated ${rows[index].application_id} to ${status}.`);
 }
 
@@ -783,11 +776,11 @@ function updateApplicationFollowup(applicationId, args) {
   if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(String(date))) {
     throw new Error("Missing or invalid follow-up date. Usage: career-os applications followup <application_id> --date YYYY-MM-DD");
   }
-  const rows = readCsvFile(PATHS.applications);
+  const rows = store.readApplications();
   const index = rows.findIndex((row) => row.application_id === applicationId || row.job_id === applicationId);
   if (index < 0) throw new Error(`Application not found: ${applicationId}`);
   rows[index] = { ...rows[index], next_follow_up: date };
-  writeApplications(rows);
+  store.writeApplications(rows);
   console.log(`Set next follow-up for ${rows[index].application_id} to ${date}.`);
 }
 
@@ -839,10 +832,10 @@ function generateApplicationArtifact(id, artifact) {
 }
 
 function getApplicationContext(id) {
-  const applications = readCsvFile(PATHS.applications);
+  const applications = store.readApplications();
   const application = applications.find((row) => row.application_id === id || row.job_id === id);
   if (!application) throw new Error(`Application not found: ${id}. Run career-os approve <job_id> and career-os apply <job_id> first.`);
-  const jobs = readJson(PATHS.normalizedJobs, []);
+  const jobs = store.readNormalizedJobs();
   const job = jobs.find((item) => item.id === application.job_id || application.job_id === item.id);
   if (!job) throw new Error(`Job for application not found: ${application.job_id}`);
   if (!application.application_dir) throw new Error("Application workspace missing. Run career-os apply <job_id> first.");
@@ -859,20 +852,20 @@ function ensureApplicationDir(job, application = {}) {
 
 function approveJob(jobId) {
   if (!isValidIdArg(jobId)) throw new Error("Missing job id. Usage: career-os approve <job_id>");
-  const jobs = readJson(PATHS.normalizedJobs, []);
+  const jobs = store.readNormalizedJobs();
   const index = jobs.findIndex((job) => job.id === jobId);
   if (index < 0) throw new Error(`Job not found: ${jobId}`);
   validateApplicationGate(jobs[index]);
   const now = new Date().toISOString();
   jobs[index] = { ...jobs[index], state: "ready_to_apply", approved_at: now, application_id: applicationIdFor(jobs[index]) };
-  fs.writeFileSync(PATHS.normalizedJobs, JSON.stringify(jobs, null, 2) + "\n");
+  store.writeNormalizedJobs(jobs);
   upsertApplication(jobs[index], "ready_to_apply", { approved_at: now });
   console.log(`Approved ${jobId} for manual application workflow.`);
 }
 
 function applyJob(jobId) {
   if (!isValidIdArg(jobId)) throw new Error("Missing job id. Usage: career-os apply <job_id>");
-  const jobs = readJson(PATHS.normalizedJobs, []);
+  const jobs = store.readNormalizedJobs();
   const job = jobs.find((item) => item.id === jobId);
   if (!job) throw new Error(`Job not found: ${jobId}`);
   validateApplicationGate(job);
@@ -895,12 +888,7 @@ function applyJob(jobId) {
 function resetData(args) {
   if (!args.includes("--data")) throw new Error("Refusing reset without explicit flag. Usage: career-os reset --data");
   ensureDirs();
-  fs.writeFileSync(PATHS.rawJobs, "");
-  fs.writeFileSync(PATHS.normalizedJobs, "[]\n");
-  fs.writeFileSync(PATHS.seenJobs, JSON.stringify({ seen: {} }, null, 2) + "\n");
-  fs.writeFileSync(PATHS.applications, applicationHeaderLine());
-  cleanDir(PATHS.reports);
-  cleanDir(PATHS.tables);
+  store.resetData();
   console.log("Reset local data, tables, and reports.");
 }
 
@@ -1494,16 +1482,6 @@ function dedupeById(jobs) {
   return [...new Map(jobs.map((job) => [job.id, job])).values()];
 }
 
-function updateSeenJobs(jobs) {
-  const data = readJson(PATHS.seenJobs, { seen: {} });
-  const now = new Date().toISOString().slice(0, 10);
-  for (const job of jobs) {
-    const current = data.seen[job.id] || { first_seen: now, status: "seen" };
-    data.seen[job.id] = { ...current, last_seen: now };
-  }
-  fs.writeFileSync(PATHS.seenJobs, JSON.stringify(data, null, 2) + "\n");
-}
-
 function parseFlags(args) {
   const flags = {};
   for (let index = 0; index < args.length; index += 1) {
@@ -1541,7 +1519,7 @@ function applicationHeaderLine() {
 }
 
 function upsertApplication(job, status, extras = {}) {
-  const rows = readCsvFile(PATHS.applications);
+  const rows = store.readApplications();
   const existing = rows.find((item) => item.application_id === applicationIdFor(job) || item.job_id === job.id) || {};
   const now = new Date().toISOString();
   const salaryRange = [job.salary_monthly_usd_min, job.salary_monthly_usd_max].filter(Boolean).join("-");
@@ -1568,17 +1546,7 @@ function upsertApplication(job, status, extras = {}) {
   };
   const nextRows = rows.filter((item) => item.application_id !== row.application_id && item.job_id !== job.id);
   nextRows.push(row);
-  writeApplications(nextRows);
-}
-
-function writeApplications(rows) {
-  fs.writeFileSync(PATHS.applications, `${APPLICATION_HEADERS.join(",")}\n${rows.map((item) => APPLICATION_HEADERS.map((header) => csvEscape(item[header])).join(",")).join("\n")}\n`);
-}
-
-function readCsvFile(filePath) {
-  if (!fs.existsSync(filePath)) return [];
-  const text = fs.readFileSync(filePath, "utf8").trim();
-  return text ? parseCsv(text) : [];
+  store.writeApplications(nextRows);
 }
 
 function countBy(rows, key) {
@@ -1596,19 +1564,6 @@ function latestFile(dir, ext) {
     .map((file) => ({ file, time: fs.statSync(path.join(dir, file)).mtimeMs }))
     .sort((a, b) => b.time - a.time);
   return files[0] ? relative(path.join(dir, files[0].file)) : "";
-}
-
-function cleanDir(dir) {
-  if (!fs.existsSync(dir)) return;
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const target = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      cleanDir(target);
-      fs.rmdirSync(target);
-    } else {
-      fs.unlinkSync(target);
-    }
-  }
 }
 
 function slugify(value) {
@@ -1940,11 +1895,6 @@ function readJson(filePath, fallback) {
   if (!fs.existsSync(filePath)) return fallback;
   const text = fs.readFileSync(filePath, "utf8").trim();
   return text ? JSON.parse(text) : fallback;
-}
-
-function readJsonl(filePath) {
-  if (!fs.existsSync(filePath)) return [];
-  return fs.readFileSync(filePath, "utf8").split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
 }
 
 function readText(filePath) {
