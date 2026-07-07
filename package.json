@@ -11,6 +11,8 @@
     "start": "node bin/career-os.js",
     "init": "node bin/career-os.js init",
     "status": "node bin/career-os.js status",
+    "sources": "node bin/career-os.js sources list",
+    "search": "node bin/career-os.js search",
     "normalize": "node bin/career-os.js normalize",
     "dedupe": "node bin/career-os.js dedupe",
     "score": "node bin/career-os.js score",

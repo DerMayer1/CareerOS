@@ -1,0 +1,73 @@
+{
+  "default_limit": 25,
+  "cache_ttl_hours": 6,
+  "sources": {
+    "remotive": {
+      "enabled": true,
+      "type": "public_api",
+      "phase": 2,
+      "base_url": "https://remotive.com/api/remote-jobs",
+      "max_limit": 100,
+      "attribution_required": true
+    },
+    "jobicy": {
+      "enabled": true,
+      "type": "public_api",
+      "phase": 2,
+      "base_url": "https://jobicy.com/api/v2/remote-jobs",
+      "max_limit": 50,
+      "attribution_required": true
+    },
+    "remoteok": {
+      "enabled": true,
+      "type": "public_api",
+      "phase": 2,
+      "base_url": "https://remoteok.com/api",
+      "max_limit": 100,
+      "attribution_required": true
+    },
+    "wwr": {
+      "enabled": true,
+      "type": "rss",
+      "phase": 2,
+      "feed_url": "https://weworkremotely.com/remote-jobs.rss",
+      "max_limit": 50,
+      "attribution_required": true
+    },
+    "wellfound": {
+      "enabled": true,
+      "type": "manual_search",
+      "phase": 2,
+      "base_url": "https://wellfound.com/jobs",
+      "search_url_template": "https://wellfound.com/jobs?keyword={query}&remote=true",
+      "max_limit": 0,
+      "notes": "Manual source. No official public search API is configured."
+    },
+    "indeed_br": {
+      "enabled": true,
+      "type": "manual_search",
+      "phase": 2,
+      "base_url": "https://br.indeed.com",
+      "search_url_template": "https://br.indeed.com/jobs?q={query}&l=remoto",
+      "max_limit": 0,
+      "notes": "Manual source. Indeed API access is partner-oriented; no scraping connector is enabled."
+    },
+    "glassdoor_br": {
+      "enabled": true,
+      "type": "manual_search",
+      "phase": 2,
+      "base_url": "https://www.glassdoor.com.br",
+      "search_url_template": "https://www.glassdoor.com.br/Job/jobs.htm?sc.keyword={query}&locT=C&locId=0",
+      "max_limit": 0,
+      "notes": "Manual source. No public low-risk job search API is configured."
+    },
+    "linkedin": {
+      "enabled": false,
+      "type": "low_volume_reference",
+      "phase": 2,
+      "base_url": "",
+      "max_limit": 10,
+      "notes": "Optional low-volume connector. Keep disabled until explicitly needed."
+    }
+  }
+}

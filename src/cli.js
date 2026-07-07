@@ -1,6 +1,8 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const http = require("http");
+const https = require("https");
 
 const ROOT = process.cwd();
 const DATA_DIR = path.join(ROOT, "data");
@@ -9,11 +11,13 @@ const OUTPUTS_DIR = path.join(ROOT, "outputs");
 const PATHS = {
   searchProfile: path.join(ROOT, "config", "search_profile.json"),
   scoringWeights: path.join(ROOT, "config", "scoring_weights.json"),
+  sourcesConfig: path.join(ROOT, "config", "sources.json"),
   candidateProfile: path.join(ROOT, "profile", "candidate-profile.md"),
   rolePreferences: path.join(ROOT, "profile", "role-preferences.md"),
   rawJobs: path.join(DATA_DIR, "jobs_raw.jsonl"),
   normalizedJobs: path.join(DATA_DIR, "jobs_normalized.json"),
   seenJobs: path.join(DATA_DIR, "seen_jobs.json"),
+  sourceCache: path.join(DATA_DIR, "source_cache.json"),
   applications: path.join(DATA_DIR, "applications.csv"),
   reports: path.join(OUTPUTS_DIR, "reports"),
   tables: path.join(OUTPUTS_DIR, "tables")
@@ -27,6 +31,8 @@ function main(args) {
   }
 
   if (command === "init") return initProject();
+  if (command === "sources" && args[1] === "list") return listSources();
+  if (command === "search") return searchJobs(args.slice(1));
   if (command === "import") return importJobs(args[1]);
   if (command === "normalize") return normalizeJobs();
   if (command === "dedupe") return dedupeJobs();
@@ -49,6 +55,8 @@ function printHelp() {
 
 Usage:
   career-os init
+  career-os sources list
+  career-os search <source|all> --query "AI Engineer" --limit 20
   career-os import <jobs.json|jobs.jsonl|jobs.csv>
   career-os normalize
   career-os dedupe
@@ -80,9 +88,11 @@ function initProject() {
   writeIfMissing("SETUP.md", setupMd());
   writeIfMissing(PATHS.searchProfile, JSON.stringify(defaultSearchProfile(), null, 2) + "\n");
   writeIfMissing(PATHS.scoringWeights, JSON.stringify(defaultScoringWeights(), null, 2) + "\n");
+  writeIfMissing(PATHS.sourcesConfig, JSON.stringify(defaultSourcesConfig(), null, 2) + "\n");
   writeIfMissing(PATHS.candidateProfile, candidateProfileMd());
   writeIfMissing(PATHS.rolePreferences, rolePreferencesMd());
   writeIfMissing(path.join(ROOT, "workflows", "search.md"), workflowSearchMd());
+  writeIfMissing(path.join(ROOT, "workflows", "search-remote.md"), workflowSearchRemoteMd());
   writeIfMissing(path.join(ROOT, "workflows", "score.md"), workflowScoreMd());
   writeIfMissing(path.join(ROOT, "workflows", "report.md"), workflowReportMd());
   writeIfMissing(path.join(ROOT, "workflows", "setup.md"), workflowSetupMd());
@@ -99,8 +109,88 @@ function initProject() {
   writeIfMissing(PATHS.rawJobs, "");
   writeIfMissing(PATHS.normalizedJobs, "[]\n");
   writeIfMissing(PATHS.seenJobs, JSON.stringify({ seen: {} }, null, 2) + "\n");
+  writeIfMissing(PATHS.sourceCache, JSON.stringify({ searches: {} }, null, 2) + "\n");
   writeIfMissing(PATHS.applications, "application_id,company,role_title,job_url,apply_url,source_site,score_fit,status,applied_at,last_follow_up,next_follow_up,salary_range,notes\n");
   console.log("Initialized CareerOS CLI project.");
+}
+
+async function listSources() {
+  ensureDirs();
+  const config = readJson(PATHS.sourcesConfig, defaultSourcesConfig());
+  const rows = Object.entries(config.sources || {}).map(([name, source]) => ({
+    source: name,
+    enabled: source.enabled !== false,
+    type: source.type || "unknown",
+    phase: source.phase || "unknown",
+    url: source.base_url || source.feed_url || ""
+  }));
+  console.log(toCsv(rows));
+}
+
+async function searchJobs(args) {
+  const sourceName = args[0];
+  if (!sourceName) throw new Error("Missing source. Usage: career-os search <source|all> --query \"AI Engineer\" --limit 20");
+  ensureDirs();
+  const flags = parseFlags(args.slice(1));
+  const config = readJson(PATHS.sourcesConfig, defaultSourcesConfig());
+  const sources = config.sources || {};
+  const selected = sourceName === "all"
+    ? Object.keys(sources).filter((name) => sources[name].enabled !== false)
+    : [sourceName];
+
+  const allJobs = [];
+  const manualLinks = [];
+  for (const name of selected) {
+    if (!sources[name]) throw new Error(`Unknown source: ${name}`);
+    if (sources[name].enabled === false) continue;
+    if (sources[name].type === "manual_search") {
+      manualLinks.push({ source: name, url: buildManualSearchUrl(sources[name], flags.query || "") });
+      continue;
+    }
+    const jobs = await searchSource(name, sources[name], flags, config);
+    allJobs.push(...jobs.map((job) => ({ ...job, source_site: job.source_site || name })));
+  }
+
+  if (flags["dry-run"]) {
+    console.log(JSON.stringify({ dry_run: true, count: allJobs.length, jobs: allJobs.slice(0, Number(flags.limit || 10)), manual_links: manualLinks }, null, 2));
+    return;
+  }
+
+  appendRawJobs(allJobs, { source: sourceName, query: flags.query || "", imported_via: "search" });
+  if (manualLinks.length) {
+    for (const link of manualLinks) console.log(`${link.source}: ${link.url}`);
+  }
+  console.log(`Search complete. Wrote ${allJobs.length} raw jobs into ${relative(PATHS.rawJobs)}.`);
+}
+
+async function searchSource(name, source, flags, config) {
+  const query = String(flags.query || "");
+  const limit = Math.max(1, Math.min(Number(flags.limit || config.default_limit || 25), source.max_limit || 100));
+  const cacheKey = stableId([name, query, limit, flags.days || "", flags.location || ""]);
+  const cache = readJson(PATHS.sourceCache, { searches: {} });
+  const cacheTtlHours = Number(config.cache_ttl_hours || 6);
+  const cached = cache.searches[cacheKey];
+  if (!flags["no-cache"] && cached && Date.now() - Date.parse(cached.fetched_at) < cacheTtlHours * 60 * 60 * 1000) {
+    return cached.jobs.slice(0, limit);
+  }
+
+  let jobs;
+  if (name === "remotive") jobs = await searchRemotive(source, query, limit);
+  else if (name === "jobicy") jobs = await searchJobicy(source, query, limit);
+  else if (name === "remoteok") jobs = await searchRemoteOk(source, query, limit);
+  else if (name === "wwr") jobs = await searchWwr(source, query, limit);
+  else throw new Error(`No connector implemented for source: ${name}`);
+
+  cache.searches[cacheKey] = { source: name, query, limit, fetched_at: new Date().toISOString(), jobs };
+  fs.writeFileSync(PATHS.sourceCache, JSON.stringify(cache, null, 2) + "\n");
+  return jobs.slice(0, limit);
+}
+
+function appendRawJobs(jobs, meta) {
+  if (!jobs.length) return;
+  const now = new Date().toISOString();
+  const lines = jobs.map((job) => JSON.stringify({ imported_at: now, ...meta, raw: job }));
+  fs.appendFileSync(PATHS.rawJobs, lines.join("\n") + "\n");
 }
 
 function importJobs(filePath) {
@@ -275,13 +365,13 @@ function resetData(args) {
 }
 
 function normalizeJob(raw, entry) {
-  const title = first(raw, ["title", "role_title", "position", "job_title", "name"]);
-  const company = first(raw, ["company", "company_name", "organization"]);
+  const title = first(raw, ["title", "role_title", "position", "job_title", "jobTitle", "name"]);
+  const company = first(raw, ["company", "company_name", "companyName", "organization"]);
   const sourceSite = first(raw, ["source_site", "source", "site"]) || inferSource(first(raw, ["source_url", "url", "job_url"]));
-  const sourceUrl = first(raw, ["source_url", "url", "job_url", "link"]);
+  const sourceUrl = first(raw, ["source_url", "url", "job_url", "jobUrl", "link"]);
   const applyUrl = first(raw, ["apply_url", "application_url"]) || sourceUrl;
-  const description = first(raw, ["description", "body", "summary", "job_description"]) || "";
-  const locationRaw = first(raw, ["location_raw", "location", "candidate_required_location"]) || "";
+  const description = first(raw, ["description", "body", "summary", "job_description", "jobDescription"]) || "";
+  const locationRaw = first(raw, ["location_raw", "location", "candidate_required_location", "jobGeo"]) || "";
   const salaryRaw = first(raw, ["salary", "salary_range", "compensation"]) || "";
   const salary = normalizeSalary(raw, salaryRaw);
   const id = first(raw, ["id", "job_id", "external_id"]) || stableId([sourceSite, sourceUrl, company, title, locationRaw, description.slice(0, 120)]);
@@ -304,7 +394,7 @@ function normalizeJob(raw, entry) {
     timezone_overlap: inferTimezoneOverlap(locationRaw, description),
     contract_type: inferContractType(raw, description),
     employment_type: first(raw, ["employment_type", "job_type"]) || "unknown",
-    seniority: inferSeniority(`${title} ${description}`),
+    seniority: inferSeniority(title || description),
     salary_min: salary.min,
     salary_max: salary.max,
     salary_currency: salary.currency,
@@ -341,7 +431,7 @@ function scoreJob(job, config, weights, profileText) {
   const matched = requirementsInJob.filter((keyword) => includesTerm(profile, keyword));
   const missing = requirementsInJob.filter((keyword) => !includesTerm(profile, keyword));
 
-  const scoreSkills = requirementsInJob.length ? Math.round((matched.length / requirementsInJob.length) * 100) : 50;
+  const scoreSkills = requirementsInJob.length ? Math.round((matched.length / requirementsInJob.length) * 100) : 20;
   const scoreExperience = scoreSeniority(job.seniority);
   const scoreSalary = scoreSalaryCompatibility(job, config);
   const scoreRemote = scoreRemoteCompatibility(job);
@@ -370,13 +460,14 @@ function scoreJob(job, config, weights, profileText) {
     score_remote: scoreRemote,
     score_company: scoreCompany,
     score_application_friction: scoreApplicationFriction,
-    recommendation: recommendationFor(job, scoreFit, scoreSalary, scoreRemote),
+    recommendation: recommendationFor(job, scoreFit, scoreSalary, scoreRemote, scoreSkills),
     notes: explanationFor(scoreFit, scoreSalary, scoreRemote, missing)
   };
 }
 
-function recommendationFor(job, scoreFit, scoreSalary, scoreRemote) {
+function recommendationFor(job, scoreFit, scoreSalary, scoreRemote, scoreSkills) {
   if (job.red_flags.some((flag) => flag.severity === "blocking") || scoreRemote < 35 || scoreSalary < 25) return "skip";
+  if (scoreSkills < 30) return scoreRemote >= 60 && scoreSalary >= 50 ? "watch" : "skip";
   if (scoreFit >= 75) return "apply";
   if (scoreFit >= 55) return "maybe";
   if (scoreRemote >= 60) return "watch";
@@ -725,6 +816,212 @@ function updateSeenJobs(jobs) {
   fs.writeFileSync(PATHS.seenJobs, JSON.stringify(data, null, 2) + "\n");
 }
 
+async function searchRemotive(source, query, limit) {
+  const url = new URL(source.base_url);
+  if (query) url.searchParams.set("search", query);
+  const data = await fetchJson(url.toString());
+  return (data.jobs || []).slice(0, limit).map((job) => ({
+    source_site: "Remotive",
+    id: job.id,
+    title: job.title,
+    company: job.company_name,
+    company_logo: job.company_logo,
+    location: job.candidate_required_location || "Remote",
+    job_type: job.job_type,
+    publication_date: job.publication_date,
+    source_url: job.url,
+    apply_url: job.url,
+    salary: job.salary || salaryRangeText(job.annualSalaryMin, job.annualSalaryMax, "USD", "year"),
+    category: job.category,
+    tags: job.tags,
+    description: stripHtml(job.description || ""),
+    raw_source: job
+  }));
+}
+
+async function searchJobicy(source, query, limit) {
+  const url = new URL(source.base_url);
+  url.searchParams.set("count", String(limit));
+  if (query) url.searchParams.set("tag", query);
+  const data = await fetchJson(url.toString());
+  const jobs = data.jobs || data.data || [];
+  return jobs.slice(0, limit).map((job) => ({
+    source_site: "Jobicy",
+    id: job.id || job.jobId,
+    title: job.jobTitle || job.title,
+    company: job.companyName || job.company,
+    location: job.jobGeo || job.location || "Remote",
+    job_type: job.jobType,
+    publication_date: job.pubDate || job.date,
+    source_url: job.url || job.jobUrl,
+    apply_url: job.url || job.jobUrl,
+    salary: job.salary,
+    annualSalaryMin: job.annualSalaryMin,
+    annualSalaryMax: job.annualSalaryMax,
+    category: job.jobIndustry,
+    tags: job.jobTags,
+    description: stripHtml(job.jobDescription || job.description || ""),
+    raw_source: job
+  }));
+}
+
+async function searchRemoteOk(source, query, limit) {
+  const url = new URL(source.base_url);
+  if (query) url.searchParams.set("tag", query.toLowerCase().replace(/\s+/g, "-"));
+  const data = await fetchJson(url.toString());
+  const jobs = Array.isArray(data) ? data.filter((item) => item && item.position) : [];
+  const filtered = query ? jobs.filter((job) => matchesQuery(`${job.position} ${job.company} ${(job.tags || []).join(" ")} ${job.description || ""}`, query)) : jobs;
+  return filtered.slice(0, limit).map((job) => ({
+    source_site: "RemoteOK",
+    id: job.id || job.slug,
+    title: job.position,
+    company: job.company,
+    company_logo: job.company_logo,
+    location: job.location || "Remote",
+    job_type: "remote",
+    publication_date: job.date,
+    source_url: job.url ? absoluteRemoteOkUrl(job.url) : `https://remoteok.com/remote-jobs/${job.id}`,
+    apply_url: job.apply_url || (job.url ? absoluteRemoteOkUrl(job.url) : ""),
+    salary: salaryRangeText(job.salary_min, job.salary_max, "USD", "year"),
+    salary_min: job.salary_min,
+    salary_max: job.salary_max,
+    salary_currency: "USD",
+    tags: job.tags,
+    description: stripHtml(job.description || ""),
+    raw_source: job
+  }));
+}
+
+async function searchWwr(source, query, limit) {
+  const xml = await fetchText(source.feed_url);
+  const items = parseRssItems(xml);
+  const filtered = query ? items.filter((item) => matchesQuery(`${item.title} ${item.description}`, query)) : items;
+  return filtered.slice(0, limit).map((item) => {
+    const parsed = parseWwrTitle(item.title);
+    return {
+      source_site: "WeWorkRemotely",
+      id: stableId([item.link, item.guid, item.title]),
+      title: parsed.title,
+      company: parsed.company,
+      location: "Remote",
+      publication_date: item.pubDate,
+      source_url: item.link,
+      apply_url: item.link,
+      description: stripHtml(item.description || ""),
+      raw_source: item
+    };
+  });
+}
+
+function fetchJson(url) {
+  return fetchText(url).then((text) => JSON.parse(text));
+}
+
+function fetchText(url) {
+  return new Promise((resolve, reject) => {
+    const client = url.startsWith("https:") ? https : http;
+    const request = client.get(url, {
+      headers: {
+        "User-Agent": "CareerOS/0.1 (+https://github.com/DerMayer1/CareerOS)",
+        "Accept": "application/json, application/rss+xml, application/xml, text/xml, text/plain, */*"
+      }
+    }, (response) => {
+      if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+        resolve(fetchText(new URL(response.headers.location, url).toString()));
+        return;
+      }
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        reject(new Error(`HTTP ${response.statusCode} for ${url}`));
+        response.resume();
+        return;
+      }
+      const chunks = [];
+      response.on("data", (chunk) => chunks.push(chunk));
+      response.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    });
+    request.setTimeout(20000, () => request.destroy(new Error(`Timeout fetching ${url}`)));
+    request.on("error", reject);
+  });
+}
+
+function parseFlags(args) {
+  const flags = {};
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (!arg.startsWith("--")) continue;
+    const key = arg.slice(2);
+    const next = args[index + 1];
+    if (!next || next.startsWith("--")) {
+      flags[key] = true;
+    } else {
+      flags[key] = next;
+      index += 1;
+    }
+  }
+  return flags;
+}
+
+function buildManualSearchUrl(source, query) {
+  const template = source.search_url_template || source.base_url || "";
+  return template.replace("{query}", encodeURIComponent(query || ""));
+}
+
+function matchesQuery(text, query) {
+  return String(query).toLowerCase().split(/\s+/).filter(Boolean).every((term) => String(text || "").toLowerCase().includes(term));
+}
+
+function absoluteRemoteOkUrl(url) {
+  return String(url).startsWith("http") ? url : `https://remoteok.com${String(url).startsWith("/") ? "" : "/"}${url}`;
+}
+
+function parseRssItems(xml) {
+  const items = [];
+  const itemRegex = /<item\b[\s\S]*?<\/item>/gi;
+  let match;
+  while ((match = itemRegex.exec(xml))) {
+    const item = match[0];
+    items.push({
+      title: decodeXml(readXmlTag(item, "title")),
+      link: decodeXml(readXmlTag(item, "link")),
+      guid: decodeXml(readXmlTag(item, "guid")),
+      pubDate: decodeXml(readXmlTag(item, "pubDate")),
+      description: decodeXml(readXmlTag(item, "description"))
+    });
+  }
+  return items;
+}
+
+function readXmlTag(xml, tag) {
+  const match = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, "i").exec(xml);
+  return match ? match[1].replace(/^<!\[CDATA\[/, "").replace(/\]\]>$/, "") : "";
+}
+
+function decodeXml(value) {
+  return String(value || "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;/g, "'");
+}
+
+function parseWwrTitle(title) {
+  const parts = String(title || "").split(":");
+  if (parts.length >= 2) {
+    return { company: parts.shift().trim(), title: parts.join(":").trim() };
+  }
+  return { company: "Unknown company", title: title || "Unknown role" };
+}
+
+function salaryRangeText(min, max, currency, period) {
+  if (!min && !max) return "";
+  return `${currency} ${min || max}-${max || min} / ${period}`;
+}
+
+function stripHtml(value) {
+  return decodeXml(String(value || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim());
+}
+
 function upsertApplication(job, status) {
   const rows = readCsvFile(PATHS.applications);
   const salaryRange = [job.salary_monthly_usd_min, job.salary_monthly_usd_max].filter(Boolean).join("-");
@@ -929,6 +1226,82 @@ function defaultScoringWeights() {
   };
 }
 
+function defaultSourcesConfig() {
+  return {
+    default_limit: 25,
+    cache_ttl_hours: 6,
+    sources: {
+      remotive: {
+        enabled: true,
+        type: "public_api",
+        phase: 2,
+        base_url: "https://remotive.com/api/remote-jobs",
+        max_limit: 100,
+        attribution_required: true
+      },
+      jobicy: {
+        enabled: true,
+        type: "public_api",
+        phase: 2,
+        base_url: "https://jobicy.com/api/v2/remote-jobs",
+        max_limit: 50,
+        attribution_required: true
+      },
+      remoteok: {
+        enabled: true,
+        type: "public_api",
+        phase: 2,
+        base_url: "https://remoteok.com/api",
+        max_limit: 100,
+        attribution_required: true
+      },
+      wwr: {
+        enabled: true,
+        type: "rss",
+        phase: 2,
+        feed_url: "https://weworkremotely.com/remote-jobs.rss",
+        max_limit: 50,
+        attribution_required: true
+      },
+      wellfound: {
+        enabled: true,
+        type: "manual_search",
+        phase: 2,
+        base_url: "https://wellfound.com/jobs",
+        search_url_template: "https://wellfound.com/jobs?keyword={query}&remote=true",
+        max_limit: 0,
+        notes: "Manual source. No official public search API is configured."
+      },
+      indeed_br: {
+        enabled: true,
+        type: "manual_search",
+        phase: 2,
+        base_url: "https://br.indeed.com",
+        search_url_template: "https://br.indeed.com/jobs?q={query}&l=remoto",
+        max_limit: 0,
+        notes: "Manual source. Indeed API access is partner-oriented; no scraping connector is enabled."
+      },
+      glassdoor_br: {
+        enabled: true,
+        type: "manual_search",
+        phase: 2,
+        base_url: "https://www.glassdoor.com.br",
+        search_url_template: "https://www.glassdoor.com.br/Job/jobs.htm?sc.keyword={query}&locT=C&locId=0",
+        max_limit: 0,
+        notes: "Manual source. No public low-risk job search API is configured."
+      },
+      linkedin: {
+        enabled: false,
+        type: "low_volume_reference",
+        phase: 2,
+        base_url: "",
+        max_limit: 10,
+        notes: "Optional low-volume connector. Keep disabled until explicitly needed."
+      }
+    }
+  };
+}
+
 function agentsMd() {
   return `# AGENTS.md
 
@@ -1061,6 +1434,23 @@ career-os normalize
 \`\`\`
 
 Search connectors should write raw source payloads to \`data/jobs_raw.jsonl\` and leave scoring to the next workflow.
+`;
+}
+
+function workflowSearchRemoteMd() {
+  return `# Workflow: Remote Search
+
+\`\`\`bash
+career-os sources list
+career-os search all --query "AI Engineer" --limit 20
+career-os normalize
+career-os dedupe
+career-os score
+career-os report
+career-os show top
+\`\`\`
+
+Keep limits small, prefer public APIs/RSS, and write raw source payloads before normalization.
 `;
 }
 
