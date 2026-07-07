@@ -46,7 +46,7 @@ Application generation is gated:
 4. The user or operator must run `career-os approve <job_id>`.
 5. Only then may `career-os apply <job_id>` create an application workspace.
 
-Phase 1 only creates a gated application workspace and placeholder files. Full CV, cover letter, and interview generation belong to a later phase.
+CareerOS must not submit applications automatically. It prepares local files and tracker state only. The user submits manually outside CareerOS.
 
 ## Claude Code Migration Map
 

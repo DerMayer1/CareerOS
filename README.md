@@ -45,7 +45,9 @@ career-os show top
 | `career-os show <table> [limit]` | Print an exported table |
 | `career-os explain <job_id>` | Explain one scored job |
 | `career-os approve <job_id>` | Mark a scored job as ready to apply |
-| `career-os apply <job_id>` | Create a gated application workspace |
+| `career-os apply <job_id>` | Create a gated manual application workspace |
+| `career-os applications list [limit]` | List tracked applications |
+| `career-os applications status <id> <status>` | Manually update application status |
 | `career-os status` | Print current local state |
 | `career-os reset --data` | Clear local generated data |
 
@@ -130,3 +132,23 @@ career-os show gaps
 career-os show red-flags
 career-os explain <job_id>
 ```
+
+## Manual Applications
+
+CareerOS does not submit applications automatically. The application workflow creates local files for review:
+
+```bash
+career-os approve <job_id>
+career-os apply <job_id>
+career-os applications list
+career-os applications status <application_id> applied
+```
+
+`career-os apply` creates a workspace under `outputs/applications/` with:
+
+- `job.md`
+- `fit-analysis.md`
+- `application-plan.md`
+- `cv-notes.md`
+- `application-message.md`
+- `interview-prep.md`

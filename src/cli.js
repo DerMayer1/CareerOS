@@ -25,6 +25,39 @@ const PATHS = {
   tables: path.join(OUTPUTS_DIR, "tables")
 };
 
+const APPLICATION_HEADERS = [
+  "application_id",
+  "job_id",
+  "company",
+  "role_title",
+  "status",
+  "recommendation",
+  "score_fit",
+  "created_at",
+  "approved_at",
+  "drafted_at",
+  "applied_at",
+  "last_follow_up",
+  "next_follow_up",
+  "application_dir",
+  "job_url",
+  "apply_url",
+  "source_site",
+  "salary_range",
+  "notes"
+];
+
+const APPLICATION_STATUSES = new Set([
+  "ready_to_apply",
+  "drafted",
+  "applied",
+  "interviewing",
+  "offer",
+  "rejected",
+  "withdrawn",
+  "archived"
+]);
+
 function main(args) {
   const command = args[0];
   if (!command || command === "help" || command === "--help" || command === "-h") {
@@ -44,6 +77,8 @@ function main(args) {
   if (command === "run") return runPipeline(args.slice(1));
   if (command === "status") return showStatus();
   if (command === "profile" && args[1] === "check") return checkProfile();
+  if (command === "applications" && args[1] === "list") return listApplications(args[2]);
+  if (command === "applications" && args[1] === "status") return updateApplicationStatus(args[2], args[3]);
   if (command === "approve") return approveJob(args[1]);
   if (command === "apply") return applyJob(args[1]);
   if (command === "reset") return resetData(args.slice(1));
@@ -72,6 +107,8 @@ Usage:
   career-os report
   career-os status
   career-os profile check
+  career-os applications list [limit]
+  career-os applications status <application_id> <status>
   career-os show top [limit]
   career-os show gaps [limit]
   career-os show red-flags [limit]
@@ -123,7 +160,7 @@ function initProject() {
   writeIfMissing(PATHS.normalizedJobs, "[]\n");
   writeIfMissing(PATHS.seenJobs, JSON.stringify({ seen: {} }, null, 2) + "\n");
   writeIfMissing(PATHS.sourceCache, JSON.stringify({ searches: {} }, null, 2) + "\n");
-  writeIfMissing(PATHS.applications, "application_id,company,role_title,job_url,apply_url,source_site,score_fit,status,applied_at,last_follow_up,next_follow_up,salary_range,notes\n");
+  writeIfMissing(PATHS.applications, applicationHeaderLine());
   console.log("Initialized CareerOS CLI project.");
 }
 
@@ -413,26 +450,52 @@ function checkProfile() {
   console.log(JSON.stringify({ ready: checks.every((check) => check.ready), checks }, null, 2));
 }
 
+function listApplications(limitArg) {
+  ensureDirs();
+  const limit = Math.max(1, Number(limitArg || 25));
+  const rows = readCsvFile(PATHS.applications).slice(0, limit);
+  if (!rows.length) {
+    console.log("No applications tracked yet.");
+    return;
+  }
+  console.log(toCsv(rows));
+}
+
+function updateApplicationStatus(applicationId, status) {
+  if (!isValidIdArg(applicationId) || !status) throw new Error("Usage: career-os applications status <application_id> <status>");
+  if (!APPLICATION_STATUSES.has(status)) {
+    throw new Error(`Invalid status: ${status}. Valid statuses: ${[...APPLICATION_STATUSES].join(", ")}`);
+  }
+  const rows = readCsvFile(PATHS.applications);
+  const index = rows.findIndex((row) => row.application_id === applicationId || row.job_id === applicationId);
+  if (index < 0) throw new Error(`Application not found: ${applicationId}`);
+  const now = new Date().toISOString();
+  rows[index] = { ...rows[index], status };
+  if (status === "drafted" && !rows[index].drafted_at) rows[index].drafted_at = now;
+  if (status === "applied" && !rows[index].applied_at) rows[index].applied_at = now;
+  writeApplications(rows);
+  console.log(`Updated ${rows[index].application_id} to ${status}.`);
+}
+
 function approveJob(jobId) {
-  if (!jobId) throw new Error("Missing job id. Usage: career-os approve <job_id>");
+  if (!isValidIdArg(jobId)) throw new Error("Missing job id. Usage: career-os approve <job_id>");
   const jobs = readJson(PATHS.normalizedJobs, []);
   const index = jobs.findIndex((job) => job.id === jobId);
   if (index < 0) throw new Error(`Job not found: ${jobId}`);
-  if (!Number.isFinite(jobs[index].score_fit)) throw new Error("Job must be scored before approval.");
-  if (!["apply", "maybe"].includes(jobs[index].recommendation)) {
-    throw new Error(`Job recommendation is ${jobs[index].recommendation}; refusing approval.`);
-  }
-  jobs[index] = { ...jobs[index], state: "ready_to_apply", approved_at: new Date().toISOString() };
+  validateApplicationGate(jobs[index]);
+  const now = new Date().toISOString();
+  jobs[index] = { ...jobs[index], state: "ready_to_apply", approved_at: now, application_id: applicationIdFor(jobs[index]) };
   fs.writeFileSync(PATHS.normalizedJobs, JSON.stringify(jobs, null, 2) + "\n");
-  upsertApplication(jobs[index], "ready_to_apply");
-  console.log(`Approved ${jobId} for application.`);
+  upsertApplication(jobs[index], "ready_to_apply", { approved_at: now });
+  console.log(`Approved ${jobId} for manual application workflow.`);
 }
 
 function applyJob(jobId) {
-  if (!jobId) throw new Error("Missing job id. Usage: career-os apply <job_id>");
+  if (!isValidIdArg(jobId)) throw new Error("Missing job id. Usage: career-os apply <job_id>");
   const jobs = readJson(PATHS.normalizedJobs, []);
   const job = jobs.find((item) => item.id === jobId);
   if (!job) throw new Error(`Job not found: ${jobId}`);
+  validateApplicationGate(job);
   if (job.state !== "ready_to_apply") {
     throw new Error("Application generation is gated. Run career-os approve <job_id> first.");
   }
@@ -441,9 +504,12 @@ function applyJob(jobId) {
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, "job.md"), jobMarkdown(job));
   fs.writeFileSync(path.join(dir, "fit-analysis.md"), fitAnalysisMarkdown(job));
+  fs.writeFileSync(path.join(dir, "application-plan.md"), applicationPlanMarkdown(job));
+  fs.writeFileSync(path.join(dir, "cv-notes.md"), cvNotesMarkdown(job));
   fs.writeFileSync(path.join(dir, "application-message.md"), applicationPlaceholderMarkdown(job));
-  upsertApplication(job, "saved");
-  console.log(`Prepared gated application workspace: ${relative(dir)}`);
+  fs.writeFileSync(path.join(dir, "interview-prep.md"), interviewPrepPlaceholderMarkdown(job));
+  upsertApplication(job, "ready_to_apply", { application_dir: relative(dir) });
+  console.log(`Prepared manual application workspace: ${relative(dir)}`);
 }
 
 function resetData(args) {
@@ -452,7 +518,7 @@ function resetData(args) {
   fs.writeFileSync(PATHS.rawJobs, "");
   fs.writeFileSync(PATHS.normalizedJobs, "[]\n");
   fs.writeFileSync(PATHS.seenJobs, JSON.stringify({ seen: {} }, null, 2) + "\n");
-  fs.writeFileSync(PATHS.applications, "application_id,company,role_title,job_url,apply_url,source_site,score_fit,status,applied_at,last_follow_up,next_follow_up,salary_range,notes\n");
+  fs.writeFileSync(PATHS.applications, applicationHeaderLine());
   cleanDir(PATHS.reports);
   cleanDir(PATHS.tables);
   console.log("Reset local data, tables, and reports.");
@@ -1362,6 +1428,10 @@ function unique(values) {
   return [...new Set((values || []).filter((value) => value != null && value !== ""))];
 }
 
+function isValidIdArg(value) {
+  return Boolean(value && value !== "undefined" && value !== "null");
+}
+
 function clampScore(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return 0;
@@ -1624,28 +1694,58 @@ function stripHtml(value) {
   return decodeXml(String(value || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim());
 }
 
-function upsertApplication(job, status) {
+function validateApplicationGate(job) {
+  if (!Number.isFinite(job.score_fit)) throw new Error("Job must be scored before approval.");
+  if (!job.score_explanation) throw new Error("Job must have score_explanation before application workflow.");
+  if (!["apply", "maybe"].includes(job.recommendation)) {
+    throw new Error(`Job recommendation is ${job.recommendation}; refusing application workflow.`);
+  }
+  if ((job.red_flags || []).some((flag) => flag.severity === "blocking")) {
+    throw new Error("Job has blocking red flags; refusing application workflow.");
+  }
+}
+
+function applicationIdFor(job) {
+  return `app:${stableId(["application", job.id])}`;
+}
+
+function applicationHeaderLine() {
+  return `${APPLICATION_HEADERS.join(",")}\n`;
+}
+
+function upsertApplication(job, status, extras = {}) {
   const rows = readCsvFile(PATHS.applications);
+  const existing = rows.find((item) => item.application_id === applicationIdFor(job) || item.job_id === job.id) || {};
+  const now = new Date().toISOString();
   const salaryRange = [job.salary_monthly_usd_min, job.salary_monthly_usd_max].filter(Boolean).join("-");
   const row = {
-    application_id: job.id,
+    application_id: existing.application_id || applicationIdFor(job),
+    job_id: job.id,
     company: job.company,
     role_title: job.title,
+    status,
+    recommendation: job.recommendation,
+    score_fit: job.score_fit,
+    created_at: existing.created_at || now,
+    approved_at: extras.approved_at || existing.approved_at || job.approved_at || "",
+    drafted_at: existing.drafted_at || "",
+    applied_at: existing.applied_at || "",
+    last_follow_up: existing.last_follow_up || "",
+    next_follow_up: existing.next_follow_up || "",
+    application_dir: extras.application_dir || existing.application_dir || "",
     job_url: job.source_url,
     apply_url: job.apply_url,
     source_site: job.source_site,
-    score_fit: job.score_fit,
-    status,
-    applied_at: "",
-    last_follow_up: "",
-    next_follow_up: "",
     salary_range: salaryRange,
-    notes: "Created by CareerOS CLI approval gate"
+    notes: extras.notes || existing.notes || "Manual application workflow. CareerOS does not submit automatically."
   };
-  const headers = ["application_id", "company", "role_title", "job_url", "apply_url", "source_site", "score_fit", "status", "applied_at", "last_follow_up", "next_follow_up", "salary_range", "notes"];
-  const nextRows = rows.filter((item) => item.application_id !== job.id);
+  const nextRows = rows.filter((item) => item.application_id !== row.application_id && item.job_id !== job.id);
   nextRows.push(row);
-  fs.writeFileSync(PATHS.applications, `${headers.join(",")}\n${nextRows.map((item) => headers.map((header) => csvEscape(item[header])).join(",")).join("\n")}\n`);
+  writeApplications(nextRows);
+}
+
+function writeApplications(rows) {
+  fs.writeFileSync(PATHS.applications, `${APPLICATION_HEADERS.join(",")}\n${rows.map((item) => APPLICATION_HEADERS.map((header) => csvEscape(item[header])).join(",")).join("\n")}\n`);
 }
 
 function readCsvFile(filePath) {
@@ -1737,6 +1837,61 @@ ${bulletList((job.red_flags || []).map((flag) => `${flag.severity}: ${flag.messa
 `;
 }
 
+function applicationPlanMarkdown(job) {
+  return `# Application Plan
+
+## Decision
+
+- Recommendation: ${job.recommendation}
+- Score: ${job.score_fit}
+- Job ID: ${job.id}
+
+## Why Apply
+
+${job.notes || "Review the component scores and fit analysis before applying."}
+
+## Positioning
+
+- Emphasize matched requirements: ${listCell(job.matched_requirements) || "none captured"}
+- Address partial matches honestly: ${listCell(job.partial_matches) || "none captured"}
+- Do not overclaim missing requirements: ${listCell(job.missing_requirements) || "none captured"}
+
+## Risks To Review
+
+${bulletList((job.red_flags || []).map((flag) => `${flag.severity}: ${flag.message}`))}
+
+## Manual Steps
+
+1. Review the original job post.
+2. Review the candidate profile.
+3. Draft application material manually or in a later CareerOS drafting phase.
+4. Submit manually outside CareerOS.
+5. Update tracker status with \`career-os applications status ${applicationIdFor(job)} applied\`.
+`;
+}
+
+function cvNotesMarkdown(job) {
+  return `# CV Notes
+
+## Keywords To Consider
+
+${bulletList([...(job.requirements_required || []), ...(job.requirements_nice_to_have || [])])}
+
+## Evidence To Use
+
+- Use only real candidate experience from \`profile/candidate-profile.md\` and \`profile/candidate-profile.json\`.
+- Prioritize evidence for: ${listCell(job.matched_requirements) || "none captured"}.
+- Explain, do not hide, gaps around: ${listCell(job.missing_requirements) || "none captured"}.
+
+## Honesty Checklist
+
+- No invented experience.
+- No invented employment history.
+- No inflated seniority.
+- No claim of work authorization unless true.
+`;
+}
+
 function applicationPlaceholderMarkdown(job) {
   return `# Application Message Draft
 
@@ -1748,6 +1903,24 @@ Before writing a real message:
 2. Re-read the candidate profile.
 3. Do not invent experience.
 4. Explain any CV changes made for this role.
+`;
+}
+
+function interviewPrepPlaceholderMarkdown(job) {
+  return `# Interview Prep
+
+Interview preparation belongs to a later phase. This placeholder records the current fit signals.
+
+## Fit Signals
+
+- Score: ${job.score_fit}
+- Matched requirements: ${listCell(job.matched_requirements) || "none captured"}
+- Partial matches: ${listCell(job.partial_matches) || "none captured"}
+- Missing requirements: ${listCell(job.missing_requirements) || "none captured"}
+
+## Questions To Prepare
+
+${bulletList((job.missing_requirements || []).slice(0, 6).map((skill) => `How to discuss gap or learning plan for ${skill}`))}
 `;
 }
 
@@ -1787,6 +1960,7 @@ function ensureDirs() {
     "data",
     "templates/cv",
     "templates/cover_letters",
+    "templates/applications",
     "templates/reports",
     "outputs/reports",
     "outputs/tables",
