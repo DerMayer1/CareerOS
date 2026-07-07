@@ -4,151 +4,42 @@ const crypto = require("crypto");
 const http = require("http");
 const https = require("https");
 const childProcess = require("child_process");
+const { APPLICATION_HEADERS, APPLICATION_STATUSES } = require("./applications/schema");
+const { dispatchAiCommand, dispatchCommand } = require("./cli/dispatch");
+const { printAiHelp, printHelp } = require("./cli/help");
+const { createProjectPaths } = require("./core/paths");
 
-const ROOT = process.cwd();
-const DATA_DIR = path.join(ROOT, "data");
-const OUTPUTS_DIR = path.join(ROOT, "outputs");
-
-const PATHS = {
-  searchProfile: path.join(ROOT, "config", "search_profile.json"),
-  scoringWeights: path.join(ROOT, "config", "scoring_weights.json"),
-  sourcesConfig: path.join(ROOT, "config", "sources.json"),
-  aiConfig: path.join(ROOT, "config", "ai.json"),
-  candidateProfile: path.join(ROOT, "profile", "candidate-profile.md"),
-  candidateProfileJson: path.join(ROOT, "profile", "candidate-profile.json"),
-  skillTaxonomy: path.join(ROOT, "profile", "skill-taxonomy.json"),
-  rolePreferences: path.join(ROOT, "profile", "role-preferences.md"),
-  rawJobs: path.join(DATA_DIR, "jobs_raw.jsonl"),
-  normalizedJobs: path.join(DATA_DIR, "jobs_normalized.json"),
-  seenJobs: path.join(DATA_DIR, "seen_jobs.json"),
-  sourceCache: path.join(DATA_DIR, "source_cache.json"),
-  applications: path.join(DATA_DIR, "applications.csv"),
-  reports: path.join(OUTPUTS_DIR, "reports"),
-  tables: path.join(OUTPUTS_DIR, "tables"),
-  aiOutputs: path.join(OUTPUTS_DIR, "ai")
-};
-
-const APPLICATION_HEADERS = [
-  "application_id",
-  "job_id",
-  "company",
-  "role_title",
-  "status",
-  "recommendation",
-  "score_fit",
-  "created_at",
-  "approved_at",
-  "drafted_at",
-  "applied_at",
-  "last_follow_up",
-  "next_follow_up",
-  "application_dir",
-  "job_url",
-  "apply_url",
-  "source_site",
-  "salary_range",
-  "notes"
-];
-
-const APPLICATION_STATUSES = new Set([
-  "ready_to_apply",
-  "drafted",
-  "applied",
-  "interviewing",
-  "offer",
-  "rejected",
-  "withdrawn",
-  "archived"
-]);
+const { ROOT, OUTPUTS_DIR, PATHS } = createProjectPaths(process.cwd());
 
 function main(args) {
-  const command = args[0];
-  if (!command || command === "help" || command === "--help" || command === "-h") {
-    printHelp();
-    return;
-  }
-
-  if (command === "init") return initProject();
-  if (command === "sources" && args[1] === "list") return listSources();
-  if (command === "search") return searchJobs(args.slice(1));
-  if (command === "import") return importJobs(args[1]);
-  if (command === "normalize") return normalizeJobs();
-  if (command === "dedupe") return dedupeJobs();
-  if (command === "extract") return extractJobs();
-  if (command === "score") return scoreJobs();
-  if (command === "report") return generateReport();
-  if (command === "run") return runPipeline(args.slice(1));
-  if (command === "status") return showStatus();
-  if (command === "profile" && args[1] === "check") return checkProfile();
-  if (command === "ai") return runAiCommand(args.slice(1));
-  if (command === "applications" && args[1] === "list") return listApplications(args[2]);
-  if (command === "applications" && args[1] === "status") return updateApplicationStatus(args[2], args[3]);
-  if (command === "applications" && args[1] === "followup") return updateApplicationFollowup(args[2], args.slice(3));
-  if (command === "application" && args[1] === "plan") return generateApplicationArtifact(args[2], "plan");
-  if (command === "application" && args[1] === "cv-notes") return generateApplicationArtifact(args[2], "cv-notes");
-  if (command === "application" && args[1] === "draft") return generateApplicationArtifact(args[2], "draft");
-  if (command === "interview") return generateInterviewPrep(args[1]);
-  if (command === "approve") return approveJob(args[1]);
-  if (command === "apply") return applyJob(args[1]);
-  if (command === "reset") return resetData(args.slice(1));
-  if (command === "show" && args[1] === "top") return showTop(args[2]);
-  if (command === "show" && args[1] === "extracted") return showExtracted(args[2]);
-  if (command === "show" && args[1] === "gaps") return showTable("skill_gap_heatmap", args[2]);
-  if (command === "show" && args[1] === "red-flags") return showTable("red_flags", args[2]);
-  if (command === "explain") return explainJob(args[1]);
-  if (command === "show" && args[1]) return showTable(args[1], args[2]);
-
-  throw new Error(`Unknown command: ${args.join(" ")}`);
-}
-
-function printHelp() {
-  console.log(`CareerOS / RemoteRadar CLI
-
-Usage:
-  career-os init
-  career-os sources list
-  career-os search <source|all> --query "AI Engineer" --limit 20
-  career-os import <jobs.json|jobs.jsonl|jobs.csv>
-  career-os normalize
-  career-os dedupe
-  career-os extract
-  career-os score
-  career-os report
-  career-os status
-  career-os profile check
-  career-os ai doctor
-  career-os ai profile-sync [--dry-run]
-  career-os ai extract <job_id|new> [--limit 5] [--dry-run]
-  career-os ai review-fit <job_id> [--dry-run]
-  career-os ai summarize-report [--dry-run]
-  career-os ai draft <application_id|job_id> [--dry-run]
-  career-os ai review-draft <application_id|job_id> [--dry-run]
-  career-os ai interview <application_id|job_id> [--dry-run]
-  career-os applications list [limit]
-  career-os applications status <application_id> <status>
-  career-os applications followup <application_id> --date YYYY-MM-DD
-  career-os application plan <application_id|job_id>
-  career-os application cv-notes <application_id|job_id>
-  career-os application draft <application_id|job_id>
-  career-os interview <application_id|job_id>
-  career-os show top [limit]
-  career-os show gaps [limit]
-  career-os show red-flags [limit]
-  career-os show <table-name> [limit]
-  career-os explain <job_id>
-  career-os approve <job_id>
-  career-os apply <job_id>
-  career-os reset --data
-  career-os run <jobs-file>
-
-MVP flow:
-  1. career-os init
-  2. career-os import ./jobs.json
-  3. career-os normalize
-  4. career-os score
-  5. career-os report
-  6. career-os show top
-`);
+  return dispatchCommand(args, {
+    approveJob,
+    checkProfile,
+    dedupeJobs,
+    explainJob,
+    extractJobs,
+    generateApplicationArtifact,
+    generateInterviewPrep,
+    generateReport,
+    importJobs,
+    initProject,
+    listApplications,
+    listSources,
+    normalizeJobs,
+    printHelp,
+    resetData,
+    runAiCommand,
+    runPipeline,
+    scoreJobs,
+    searchJobs,
+    showExtracted,
+    showStatus,
+    showTable,
+    showTop,
+    applyJob,
+    updateApplicationFollowup,
+    updateApplicationStatus
+  });
 }
 
 function initProject() {
@@ -476,43 +367,17 @@ function checkProfile() {
 }
 
 function runAiCommand(args) {
-  const subcommand = args[0];
-  if (!subcommand || subcommand === "help" || subcommand === "--help" || subcommand === "-h") {
-    printAiHelp();
-    return;
-  }
-
-  if (subcommand === "doctor") return aiDoctor();
-  if (subcommand === "profile-sync") return aiProfileSync(args.slice(1));
-  if (subcommand === "extract") return aiExtract(args.slice(1));
-  if (subcommand === "review-fit") return aiReviewFit(args.slice(1));
-  if (subcommand === "summarize-report") return aiSummarizeReport(args.slice(1));
-  if (subcommand === "draft") return aiDraft(args.slice(1));
-  if (subcommand === "review-draft") return aiReviewDraft(args.slice(1));
-  if (subcommand === "interview") return aiInterview(args.slice(1));
-
-  throw new Error(`Unknown ai command: ${subcommand}`);
-}
-
-function printAiHelp() {
-  console.log(`CareerOS AI commands
-
-Usage:
-  career-os ai doctor
-  career-os ai profile-sync [--dry-run]
-  career-os ai extract <job_id|new> [--limit 5] [--dry-run]
-  career-os ai review-fit <job_id> [--dry-run]
-  career-os ai summarize-report [--dry-run]
-  career-os ai draft <application_id|job_id> [--dry-run]
-  career-os ai review-draft <application_id|job_id> [--dry-run]
-  career-os ai interview <application_id|job_id> [--dry-run]
-
-Rules:
-  AI commands call Codex CLI through codex exec.
-  Prompts and responses are saved under outputs/ai.
-  Application AI commands require the normal approve/apply gate first.
-  CareerOS never submits applications or contacts employers automatically.
-`);
+  return dispatchAiCommand(args, {
+    aiDoctor,
+    aiDraft,
+    aiExtract,
+    aiInterview,
+    aiProfileSync,
+    aiReviewDraft,
+    aiReviewFit,
+    aiSummarizeReport,
+    printAiHelp
+  });
 }
 
 function aiDoctor() {
