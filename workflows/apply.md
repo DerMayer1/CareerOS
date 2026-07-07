@@ -6,6 +6,9 @@ Application work is gated by score and approval.
 career-os approve <job_id>
 career-os apply <job_id>
 career-os applications list
+career-os application plan <application_id>
+career-os application cv-notes <application_id>
+career-os application draft <application_id>
 career-os applications status <application_id> applied
 ```
 
@@ -14,6 +17,7 @@ Behavior:
 - `approve` marks a scored `apply` or `maybe` job as `ready_to_apply`.
 - `apply` creates a manual application workspace with `job.md`, `fit-analysis.md`, `application-plan.md`, `cv-notes.md`, `application-message.md`, and `interview-prep.md`.
 - `applications status` records the user's manual status changes.
+- `application draft` creates reviewable Markdown drafts and marks the tracker as `drafted`.
 - CareerOS does not submit applications.
 
 Rules:

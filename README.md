@@ -48,6 +48,9 @@ career-os show top
 | `career-os apply <job_id>` | Create a gated manual application workspace |
 | `career-os applications list [limit]` | List tracked applications |
 | `career-os applications status <id> <status>` | Manually update application status |
+| `career-os application plan <id>` | Regenerate application plan |
+| `career-os application cv-notes <id>` | Regenerate CV notes |
+| `career-os application draft <id>` | Generate message and cover letter drafts |
 | `career-os status` | Print current local state |
 | `career-os reset --data` | Clear local generated data |
 
@@ -141,6 +144,9 @@ CareerOS does not submit applications automatically. The application workflow cr
 career-os approve <job_id>
 career-os apply <job_id>
 career-os applications list
+career-os application plan <application_id>
+career-os application cv-notes <application_id>
+career-os application draft <application_id>
 career-os applications status <application_id> applied
 ```
 
@@ -151,4 +157,5 @@ career-os applications status <application_id> applied
 - `application-plan.md`
 - `cv-notes.md`
 - `application-message.md`
+- `cover-letter.md`
 - `interview-prep.md`

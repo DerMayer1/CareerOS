@@ -79,6 +79,9 @@ function main(args) {
   if (command === "profile" && args[1] === "check") return checkProfile();
   if (command === "applications" && args[1] === "list") return listApplications(args[2]);
   if (command === "applications" && args[1] === "status") return updateApplicationStatus(args[2], args[3]);
+  if (command === "application" && args[1] === "plan") return generateApplicationArtifact(args[2], "plan");
+  if (command === "application" && args[1] === "cv-notes") return generateApplicationArtifact(args[2], "cv-notes");
+  if (command === "application" && args[1] === "draft") return generateApplicationArtifact(args[2], "draft");
   if (command === "approve") return approveJob(args[1]);
   if (command === "apply") return applyJob(args[1]);
   if (command === "reset") return resetData(args.slice(1));
@@ -109,6 +112,9 @@ Usage:
   career-os profile check
   career-os applications list [limit]
   career-os applications status <application_id> <status>
+  career-os application plan <application_id|job_id>
+  career-os application cv-notes <application_id|job_id>
+  career-os application draft <application_id|job_id>
   career-os show top [limit]
   career-os show gaps [limit]
   career-os show red-flags [limit]
@@ -475,6 +481,59 @@ function updateApplicationStatus(applicationId, status) {
   if (status === "applied" && !rows[index].applied_at) rows[index].applied_at = now;
   writeApplications(rows);
   console.log(`Updated ${rows[index].application_id} to ${status}.`);
+}
+
+function generateApplicationArtifact(id, artifact) {
+  if (!isValidIdArg(id)) throw new Error(`Usage: career-os application ${artifact} <application_id|job_id>`);
+  const context = getApplicationContext(id);
+  const { job, application } = context;
+  const dir = ensureApplicationDir(job, application);
+  const profile = readJson(PATHS.candidateProfileJson, defaultCandidateProfileJson());
+  const profileText = readText(PATHS.candidateProfile);
+
+  if (artifact === "plan") {
+    fs.writeFileSync(path.join(dir, "application-plan.md"), applicationPlanMarkdown(job, profile, profileText));
+    upsertApplication(job, application.status || "ready_to_apply", { application_dir: relative(dir) });
+    console.log(`Wrote ${relative(path.join(dir, "application-plan.md"))}`);
+    return;
+  }
+
+  if (artifact === "cv-notes") {
+    fs.writeFileSync(path.join(dir, "cv-notes.md"), cvNotesMarkdown(job, profile, profileText));
+    upsertApplication(job, application.status || "ready_to_apply", { application_dir: relative(dir) });
+    console.log(`Wrote ${relative(path.join(dir, "cv-notes.md"))}`);
+    return;
+  }
+
+  if (artifact === "draft") {
+    fs.writeFileSync(path.join(dir, "application-message.md"), applicationMessageMarkdown(job, profile, profileText));
+    fs.writeFileSync(path.join(dir, "cover-letter.md"), coverLetterMarkdown(job, profile, profileText));
+    upsertApplication(job, "drafted", { application_dir: relative(dir), drafted_at: new Date().toISOString() });
+    console.log(`Wrote ${relative(path.join(dir, "application-message.md"))}`);
+    console.log(`Wrote ${relative(path.join(dir, "cover-letter.md"))}`);
+    return;
+  }
+
+  throw new Error(`Unknown application artifact: ${artifact}`);
+}
+
+function getApplicationContext(id) {
+  const applications = readCsvFile(PATHS.applications);
+  const application = applications.find((row) => row.application_id === id || row.job_id === id);
+  if (!application) throw new Error(`Application not found: ${id}. Run career-os approve <job_id> and career-os apply <job_id> first.`);
+  const jobs = readJson(PATHS.normalizedJobs, []);
+  const job = jobs.find((item) => item.id === application.job_id || application.job_id === item.id);
+  if (!job) throw new Error(`Job for application not found: ${application.job_id}`);
+  if (!application.application_dir) throw new Error("Application workspace missing. Run career-os apply <job_id> first.");
+  return { application, job };
+}
+
+function ensureApplicationDir(job, application = {}) {
+  const dir = application.application_dir
+    ? path.join(ROOT, application.application_dir)
+    : path.join(OUTPUTS_DIR, "applications", slugify(`${job.company}-${job.title}-${new Date().toISOString().slice(0, 10)}`));
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
 }
 
 function approveJob(jobId) {
@@ -1728,7 +1787,7 @@ function upsertApplication(job, status, extras = {}) {
     score_fit: job.score_fit,
     created_at: existing.created_at || now,
     approved_at: extras.approved_at || existing.approved_at || job.approved_at || "",
-    drafted_at: existing.drafted_at || "",
+    drafted_at: extras.drafted_at || existing.drafted_at || "",
     applied_at: existing.applied_at || "",
     last_follow_up: existing.last_follow_up || "",
     next_follow_up: existing.next_follow_up || "",
@@ -1837,7 +1896,8 @@ ${bulletList((job.red_flags || []).map((flag) => `${flag.severity}: ${flag.messa
 `;
 }
 
-function applicationPlanMarkdown(job) {
+function applicationPlanMarkdown(job, profile = readJson(PATHS.candidateProfileJson, defaultCandidateProfileJson()), profileText = readText(PATHS.candidateProfile)) {
+  const pitch = buildPitch(job, profile);
   return `# Application Plan
 
 ## Decision
@@ -1850,11 +1910,19 @@ function applicationPlanMarkdown(job) {
 
 ${job.notes || "Review the component scores and fit analysis before applying."}
 
+## Short Pitch
+
+${pitch}
+
 ## Positioning
 
 - Emphasize matched requirements: ${listCell(job.matched_requirements) || "none captured"}
 - Address partial matches honestly: ${listCell(job.partial_matches) || "none captured"}
 - Do not overclaim missing requirements: ${listCell(job.missing_requirements) || "none captured"}
+
+## Profile Evidence To Review
+
+${profileEvidenceMarkdown(job, profile, profileText)}
 
 ## Risks To Review
 
@@ -1870,7 +1938,7 @@ ${bulletList((job.red_flags || []).map((flag) => `${flag.severity}: ${flag.messa
 `;
 }
 
-function cvNotesMarkdown(job) {
+function cvNotesMarkdown(job, profile = readJson(PATHS.candidateProfileJson, defaultCandidateProfileJson()), profileText = readText(PATHS.candidateProfile)) {
   return `# CV Notes
 
 ## Keywords To Consider
@@ -1883,6 +1951,14 @@ ${bulletList([...(job.requirements_required || []), ...(job.requirements_nice_to
 - Prioritize evidence for: ${listCell(job.matched_requirements) || "none captured"}.
 - Explain, do not hide, gaps around: ${listCell(job.missing_requirements) || "none captured"}.
 
+## Suggested Emphasis
+
+${bulletList(cvEmphasis(job, profile))}
+
+## Profile Source Snapshot
+
+${profileText.trim() ? profileText.slice(0, 1200) : "No Markdown profile details filled yet."}
+
 ## Honesty Checklist
 
 - No invented experience.
@@ -1893,16 +1969,55 @@ ${bulletList([...(job.requirements_required || []), ...(job.requirements_nice_to
 }
 
 function applicationPlaceholderMarkdown(job) {
+  return applicationMessageMarkdown(job, readJson(PATHS.candidateProfileJson, defaultCandidateProfileJson()), readText(PATHS.candidateProfile));
+}
+
+function applicationMessageMarkdown(job, profile, profileText) {
+  const pitch = buildPitch(job, profile);
   return `# Application Message Draft
 
-Application writing belongs to a later phase. For now, this file records that ${job.company} - ${job.title} passed the approval gate.
+This is a reviewable draft. CareerOS does not send it automatically.
 
-Before writing a real message:
+## Short Version
 
-1. Re-read the job description.
-2. Re-read the candidate profile.
-3. Do not invent experience.
-4. Explain any CV changes made for this role.
+Hi ${job.company} team,
+
+I'm interested in the ${job.title} role. ${pitch}
+
+The role stood out because it connects with ${listCell(job.matched_requirements) || "the strongest requirements I currently match"}. I would be glad to share more context and discuss where I can contribute.
+
+Best,
+
+[Your name]
+
+## Direct Notes For Review
+
+- Matched requirements: ${listCell(job.matched_requirements) || "none captured"}
+- Partial matches: ${listCell(job.partial_matches) || "none captured"}
+- Gaps to avoid overclaiming: ${listCell(job.missing_requirements) || "none captured"}
+- Red flags to review: ${listCell((job.red_flags || []).map((flag) => `${flag.severity}: ${flag.message}`)) || "none"}
+`;
+}
+
+function coverLetterMarkdown(job, profile, profileText) {
+  const pitch = buildPitch(job, profile);
+  return `# Cover Letter Draft
+
+This is a reviewable draft. CareerOS does not send it automatically.
+
+Dear ${job.company} team,
+
+I am writing to express interest in the ${job.title} role. ${pitch}
+
+Based on the posting, the strongest areas of alignment are ${listCell(job.matched_requirements) || "the requirements currently marked as matched"}. I would position my application around practical execution, clear communication, and the ability to connect technical implementation with product outcomes.
+
+I also want to be precise about gaps. The current analysis marks ${listCell(job.missing_requirements) || "no major missing requirements"} as areas to review before submitting. I would not claim experience that is not supported by the profile.
+
+Thank you for considering my application.
+
+Sincerely,
+
+[Your name]
 `;
 }
 
@@ -1922,6 +2037,36 @@ Interview preparation belongs to a later phase. This placeholder records the cur
 
 ${bulletList((job.missing_requirements || []).slice(0, 6).map((skill) => `How to discuss gap or learning plan for ${skill}`))}
 `;
+}
+
+function buildPitch(job, profile) {
+  const matched = job.matched_requirements || [];
+  const targetRoles = profile.target_roles || [];
+  const roleFit = targetRoles.find((role) => includesTerm(job.title, role)) || targetRoles[0] || "the target role";
+  if (matched.length) {
+    return `My background is most relevant to this role through ${matched.slice(0, 4).join(", ")}, with additional context around ${roleFit}.`;
+  }
+  return `The role appears aligned with ${roleFit}, but the application should be reviewed carefully because matched requirements are still limited.`;
+}
+
+function profileEvidenceMarkdown(job, profile, profileText) {
+  const evidence = [];
+  const strong = profile.skills_strong || [];
+  const medium = profile.skills_medium || [];
+  for (const skill of job.matched_requirements || []) {
+    if (strong.map(normalizeSkill).includes(normalizeSkill(skill))) evidence.push(`${skill}: listed as strong in structured profile`);
+    else if (medium.map(normalizeSkill).includes(normalizeSkill(skill))) evidence.push(`${skill}: listed as medium in structured profile`);
+  }
+  if (!evidence.length && profileText.trim()) evidence.push("Review Markdown profile for concrete examples before submitting.");
+  return bulletList(evidence);
+}
+
+function cvEmphasis(job, profile) {
+  const items = [];
+  for (const skill of job.matched_requirements || []) items.push(`Make ${skill} visible if supported by real experience.`);
+  for (const skill of job.partial_matches || []) items.push(`Mention ${skill} only as adjacent or learning context.`);
+  for (const skill of job.missing_requirements || []) items.push(`Do not claim ${skill}; prepare a gap explanation if needed.`);
+  return items;
 }
 
 function bulletList(items) {

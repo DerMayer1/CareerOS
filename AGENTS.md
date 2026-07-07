@@ -47,6 +47,7 @@ Application generation is gated:
 5. Only then may `career-os apply <job_id>` create an application workspace.
 
 CareerOS must not submit applications automatically. It prepares local files and tracker state only. The user submits manually outside CareerOS.
+Drafting commands produce reviewable Markdown only and must not claim unsupported experience.
 
 ## Claude Code Migration Map
 
