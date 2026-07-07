@@ -13,6 +13,8 @@ const PATHS = {
   scoringWeights: path.join(ROOT, "config", "scoring_weights.json"),
   sourcesConfig: path.join(ROOT, "config", "sources.json"),
   candidateProfile: path.join(ROOT, "profile", "candidate-profile.md"),
+  candidateProfileJson: path.join(ROOT, "profile", "candidate-profile.json"),
+  skillTaxonomy: path.join(ROOT, "profile", "skill-taxonomy.json"),
   rolePreferences: path.join(ROOT, "profile", "role-preferences.md"),
   rawJobs: path.join(DATA_DIR, "jobs_raw.jsonl"),
   normalizedJobs: path.join(DATA_DIR, "jobs_normalized.json"),
@@ -36,6 +38,7 @@ function main(args) {
   if (command === "import") return importJobs(args[1]);
   if (command === "normalize") return normalizeJobs();
   if (command === "dedupe") return dedupeJobs();
+  if (command === "extract") return extractJobs();
   if (command === "score") return scoreJobs();
   if (command === "report") return generateReport();
   if (command === "run") return runPipeline(args.slice(1));
@@ -45,6 +48,7 @@ function main(args) {
   if (command === "apply") return applyJob(args[1]);
   if (command === "reset") return resetData(args.slice(1));
   if (command === "show" && args[1] === "top") return showTop(args[2]);
+  if (command === "show" && args[1] === "extracted") return showExtracted(args[2]);
   if (command === "show" && args[1]) return showTable(args[1], args[2]);
 
   throw new Error(`Unknown command: ${args.join(" ")}`);
@@ -60,6 +64,7 @@ Usage:
   career-os import <jobs.json|jobs.jsonl|jobs.csv>
   career-os normalize
   career-os dedupe
+  career-os extract
   career-os score
   career-os report
   career-os status
@@ -90,6 +95,8 @@ function initProject() {
   writeIfMissing(PATHS.scoringWeights, JSON.stringify(defaultScoringWeights(), null, 2) + "\n");
   writeIfMissing(PATHS.sourcesConfig, JSON.stringify(defaultSourcesConfig(), null, 2) + "\n");
   writeIfMissing(PATHS.candidateProfile, candidateProfileMd());
+  writeIfMissing(PATHS.candidateProfileJson, JSON.stringify(defaultCandidateProfileJson(), null, 2) + "\n");
+  writeIfMissing(PATHS.skillTaxonomy, JSON.stringify(defaultSkillTaxonomy(), null, 2) + "\n");
   writeIfMissing(PATHS.rolePreferences, rolePreferencesMd());
   writeIfMissing(path.join(ROOT, "workflows", "search.md"), workflowSearchMd());
   writeIfMissing(path.join(ROOT, "workflows", "search-remote.md"), workflowSearchRemoteMd());
@@ -227,6 +234,16 @@ function dedupeJobs() {
   console.log(`Deduped ${jobs.length} normalized jobs down to ${unique.length}.`);
 }
 
+function extractJobs() {
+  ensureDirs();
+  const jobs = readJson(PATHS.normalizedJobs, []);
+  const profile = readJson(PATHS.candidateProfileJson, defaultCandidateProfileJson());
+  const taxonomy = readJson(PATHS.skillTaxonomy, defaultSkillTaxonomy());
+  const extracted = jobs.map((job) => extractJobSignals(job, profile, taxonomy));
+  fs.writeFileSync(PATHS.normalizedJobs, JSON.stringify(extracted, null, 2) + "\n");
+  console.log(`Extracted deterministic signals for ${extracted.length} jobs.`);
+}
+
 function scoreJobs() {
   ensureDirs();
   const jobs = readJson(PATHS.normalizedJobs, []);
@@ -257,6 +274,7 @@ function runPipeline(args) {
   if (file) importJobs(file);
   normalizeJobs();
   dedupeJobs();
+  extractJobs();
   scoreJobs();
   generateReport();
 }
@@ -286,6 +304,30 @@ function showTable(tableName, limitArg) {
   console.log(rows.slice(0, limit + 1).join("\n"));
 }
 
+function showExtracted(limitArg) {
+  const limit = Math.max(1, Number(limitArg || 10));
+  const jobs = readJson(PATHS.normalizedJobs, []).slice(0, limit).map((job) => ({
+    id: job.id,
+    company: job.company,
+    role_title: job.title,
+    seniority: job.seniority,
+    required: listCell(job.requirements_required),
+    nice_to_have: listCell(job.requirements_nice_to_have),
+    matched: listCell(job.matched_requirements),
+    partial: listCell(job.partial_matches),
+    missing: listCell(job.missing_requirements),
+    years: job.extracted_signals?.years_experience_min || "",
+    remote_region: job.remote_region,
+    work_authorization: listCell(job.extracted_signals?.work_authorization),
+    red_flags: listCell((job.red_flags || []).map((flag) => `${flag.severity}:${flag.message}`))
+  }));
+  if (!jobs.length) {
+    console.log("No extracted jobs yet. Run: career-os extract");
+    return;
+  }
+  console.log(toCsv(jobs));
+}
+
 function showStatus() {
   ensureDirs();
   const rawCount = readJsonl(PATHS.rawJobs).length;
@@ -307,6 +349,8 @@ function checkProfile() {
   ensureDirs();
   const checks = [
     ["candidate profile", PATHS.candidateProfile],
+    ["candidate profile json", PATHS.candidateProfileJson],
+    ["skill taxonomy", PATHS.skillTaxonomy],
     ["role preferences", PATHS.rolePreferences],
     ["search profile", PATHS.searchProfile],
     ["scoring weights", PATHS.scoringWeights]
@@ -314,7 +358,8 @@ function checkProfile() {
     const exists = fs.existsSync(filePath);
     const text = exists ? fs.readFileSync(filePath, "utf8") : "";
     const todoCount = (text.match(/\bTODO\b|\[[A-Z0-9_]+\]/g) || []).length;
-    return { label, path: relative(filePath), exists, todo_count: todoCount, ready: exists && todoCount === 0 };
+    const parseError = filePath.endsWith(".json") ? jsonParseError(text) : "";
+    return { label, path: relative(filePath), exists, todo_count: todoCount, parse_error: parseError || null, ready: exists && todoCount === 0 && !parseError };
   });
   console.log(JSON.stringify({ ready: checks.every((check) => check.ready), checks }, null, 2));
 }
@@ -463,6 +508,177 @@ function scoreJob(job, config, weights, profileText) {
     recommendation: recommendationFor(job, scoreFit, scoreSalary, scoreRemote, scoreSkills),
     notes: explanationFor(scoreFit, scoreSalary, scoreRemote, missing)
   };
+}
+
+function extractJobSignals(job, profile, taxonomy) {
+  const title = String(job.title || "");
+  const description = String(job.description || "");
+  const text = `${title}\n${description}`;
+  const lower = text.toLowerCase();
+  const skills = findSkills(text, taxonomy);
+  const required = unique([...skills.required, ...skills.mentioned.filter((skill) => appearsRequired(lower, skill))]);
+  const nice = unique([...skills.nice, ...skills.mentioned.filter((skill) => appearsNiceToHave(lower, skill))])
+    .filter((skill) => !required.includes(skill));
+  const profileSkills = collectProfileSkills(profile);
+  const matched = required.filter((skill) => profileSkills.strong.includes(skill) || profileSkills.medium.includes(skill));
+  const partial = required.filter((skill) => profileSkills.learning.includes(skill) || profileSkills.adjacent.includes(skill));
+  const missing = required.filter((skill) => !matched.includes(skill) && !partial.includes(skill));
+  const years = extractYearsExperience(text);
+  const seniority = inferSeniorityFromSignals(title, description, years, job.seniority);
+  const remoteSignals = extractRemoteSignals(text);
+  const authorization = extractWorkAuthorization(text);
+  const responsibilities = extractResponsibilities(description, taxonomy);
+  const redFlags = mergeRedFlags(job.red_flags || [], inferExtractionRedFlags(text, job, profile));
+
+  return {
+    ...job,
+    seniority,
+    remote_region: chooseRemoteRegion(job.remote_region, remoteSignals.remote_region),
+    timezone_overlap: remoteSignals.timezone_overlap || job.timezone_overlap,
+    requirements_required: required,
+    requirements_nice_to_have: nice,
+    matched_requirements: matched,
+    partial_matches: partial,
+    missing_requirements: missing,
+    red_flags: redFlags,
+    extracted_signals: {
+      extracted_at: new Date().toISOString(),
+      skills_mentioned: skills.mentioned,
+      years_experience_min: years,
+      seniority_source: seniority === job.seniority ? "normalized" : "extracted",
+      responsibilities,
+      remote_region: chooseRemoteRegion(job.remote_region, remoteSignals.remote_region),
+      timezone_overlap: remoteSignals.timezone_overlap || job.timezone_overlap,
+      work_authorization: authorization,
+      contract_signals: extractContractSignals(text),
+      role_family: inferRoleFamily(title, taxonomy),
+      confidence: required.length || nice.length || responsibilities.length ? "medium" : "low"
+    }
+  };
+}
+
+function findSkills(text, taxonomy) {
+  const lower = String(text || "").toLowerCase();
+  const allSkills = flattenSkills(taxonomy);
+  const mentioned = allSkills.filter((skill) => includesTerm(lower, skill));
+  const required = mentioned.filter((skill) => appearsRequired(lower, skill));
+  const nice = mentioned.filter((skill) => appearsNiceToHave(lower, skill));
+  return { mentioned: unique(mentioned), required: unique(required), nice: unique(nice) };
+}
+
+function flattenSkills(taxonomy) {
+  const groups = taxonomy.skills || {};
+  return unique(Object.values(groups).flatMap((items) => items || []).map(normalizeSkill));
+}
+
+function collectProfileSkills(profile) {
+  return {
+    strong: (profile.skills_strong || []).map(normalizeSkill),
+    medium: (profile.skills_medium || []).map(normalizeSkill),
+    learning: (profile.skills_learning || []).map(normalizeSkill),
+    adjacent: (profile.skills_adjacent || []).map(normalizeSkill)
+  };
+}
+
+function appearsRequired(lowerText, skill) {
+  const escaped = escapeRegex(skill);
+  return new RegExp(`(required|requirements|required experience|must have|strong|proficient|expert|hands-on|core requirement)[^\\.\\n]{0,180}\\b${escaped}\\b|\\b${escaped}\\b[^\\.\\n]{0,120}(required|must have|proficiency|experience)`, "i").test(lowerText);
+}
+
+function appearsNiceToHave(lowerText, skill) {
+  const escaped = escapeRegex(skill);
+  return new RegExp(`(nice to have|preferred|bonus|plus|familiarity|desirable)[^\\.\\n]{0,180}\\b${escaped}\\b|\\b${escaped}\\b[^\\.\\n]{0,120}(nice to have|preferred|bonus|plus)`, "i").test(lowerText);
+}
+
+function extractYearsExperience(text) {
+  const matches = [...String(text || "").matchAll(/(\d+)\+?\s*(?:years|yrs)\s+(?:of\s+)?experience/gi)].map((match) => Number(match[1]));
+  return matches.length ? Math.max(...matches.filter(Number.isFinite)) : null;
+}
+
+function inferSeniorityFromSignals(title, description, years, fallback) {
+  const fromTitle = inferSeniority(title);
+  if (fromTitle !== "unknown") return fromTitle;
+  if (years >= 8) return "staff";
+  if (years >= 5) return "senior";
+  if (years >= 3) return "mid";
+  if (years > 0) return "junior";
+  return fallback || "unknown";
+}
+
+function extractRemoteSignals(text) {
+  const remote_region = inferRemoteRegion(text, "");
+  const timezone_overlap = inferTimezoneOverlap(text, "");
+  return { remote_region: remote_region === "unknown" ? "" : remote_region, timezone_overlap };
+}
+
+function chooseRemoteRegion(existing, extracted) {
+  if (!extracted) return existing;
+  if (existing && !["unknown", "remote_unknown"].includes(String(existing).toLowerCase())) return existing;
+  return extracted;
+}
+
+function extractWorkAuthorization(text) {
+  const lower = String(text || "").toLowerCase();
+  const signals = [];
+  if (/authorized to work in the us|us work authorization|u\.s\. work authorization|us citizenship|u\.s\. citizenship/.test(lower)) signals.push("US authorization");
+  if (/authorized to work in the eu|eu work authorization|european union work authorization|right to work in europe/.test(lower)) signals.push("EU authorization");
+  if (/must be based in brazil|brazil only|brasil/.test(lower)) signals.push("Brazil");
+  return unique(signals);
+}
+
+function extractResponsibilities(description, taxonomy) {
+  const sentences = String(description || "").split(/(?<=[.!?])\s+|\n+/).map((item) => item.trim()).filter(Boolean);
+  const verbs = taxonomy.responsibility_verbs || ["build", "design", "develop", "implement", "maintain", "lead", "integrate", "automate", "evaluate"];
+  return sentences
+    .filter((sentence) => verbs.some((verb) => new RegExp(`\\b${escapeRegex(verb)}\\b`, "i").test(sentence)))
+    .slice(0, 8);
+}
+
+function extractContractSignals(text) {
+  const lower = String(text || "").toLowerCase();
+  return unique([
+    /contractor|b2b|pj/.test(lower) ? "contractor" : "",
+    /full.?time/.test(lower) ? "full-time" : "",
+    /part.?time/.test(lower) ? "part-time" : "",
+    /freelance/.test(lower) ? "freelance" : ""
+  ].filter(Boolean));
+}
+
+function inferRoleFamily(title, taxonomy) {
+  const lower = String(title || "").toLowerCase();
+  const families = taxonomy.role_families || {};
+  for (const [family, terms] of Object.entries(families)) {
+    if ((terms || []).some((term) => lower.includes(String(term).toLowerCase()))) return family;
+  }
+  return "unknown";
+}
+
+function inferExtractionRedFlags(text, job, profile) {
+  const lower = String(text || "").toLowerCase();
+  const flags = [];
+  const minSalary = Number(profile.salary_min_monthly_usd || 0);
+  if (/unpaid|volunteer/.test(lower)) flags.push({ severity: "blocking", message: "Unpaid or volunteer role" });
+  if (/commission.?only/.test(lower)) flags.push({ severity: "blocking", message: "Commission-only compensation" });
+  if (/us citizenship|u\.s\. citizenship|security clearance/.test(lower)) flags.push({ severity: "blocking", message: "Citizenship or clearance requirement" });
+  if (/take-?home.{0,80}(before|prior to).{0,80}(call|screen|interview)/.test(lower)) flags.push({ severity: "warning", message: "Take-home before screening" });
+  if ((job.salary_monthly_usd_min || 0) > 0 && minSalary > 0 && job.salary_monthly_usd_min < minSalary) {
+    flags.push({ severity: "blocking", message: "Salary below configured minimum" });
+  }
+  return flags;
+}
+
+function mergeRedFlags(existing, extra) {
+  const seen = new Set();
+  return [...existing, ...extra].filter((flag) => {
+    const key = `${flag.severity}:${flag.message}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function normalizeSkill(skill) {
+  return String(skill || "").trim().toLowerCase();
 }
 
 function recommendationFor(job, scoreFit, scoreSalary, scoreRemote, scoreSkills) {
@@ -644,8 +860,8 @@ function inferRemoteRegion(location, description) {
   const text = `${location} ${description}`.toLowerCase();
   if (/worldwide|global|anywhere/.test(text)) return "worldwide";
   if (/latam|latin america|south america|brazil|brasil/.test(text)) return "LATAM";
-  if (/united states|usa|u\.s\.|us only/.test(text)) return "USA";
-  if (/europe|emea|eu only/.test(text)) return "Europe";
+  if (/us-only|usa only|u\.s\. only|must be based in (the )?(united states|usa|u\.s\.)|must be authorized to work in the us/.test(text)) return "USA";
+  if (/eu-only|europe only|must be based in europe|must be based in the eu/.test(text)) return "Europe";
   if (/remote/.test(text)) return "remote_unknown";
   return "unknown";
 }
@@ -774,6 +990,24 @@ function first(object, keys) {
 function includesTerm(text, term) {
   const escaped = String(term).toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, "i").test(String(text || ""));
+}
+
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function unique(values) {
+  return [...new Set((values || []).filter((value) => value != null && value !== ""))];
+}
+
+function jsonParseError(text) {
+  if (!text.trim()) return "empty json";
+  try {
+    JSON.parse(text);
+    return "";
+  } catch (error) {
+    return error.message;
+  }
 }
 
 function numberOrNull(value) {
@@ -1211,6 +1445,50 @@ function defaultSearchProfile() {
     keywords_excluded: ["unpaid", "volunteer", "onsite only"],
     salary_min_monthly_usd: 4000,
     timezone: "America/Sao_Paulo"
+  };
+}
+
+function defaultCandidateProfileJson() {
+  return {
+    name: "",
+    location: "Brazil",
+    timezone: "America/Sao_Paulo",
+    languages: [],
+    skills_strong: ["python", "typescript", "ai", "llm", "automation"],
+    skills_medium: ["react", "node.js", "backend", "postgres", "docker"],
+    skills_learning: ["kubernetes", "soc2", "langchain"],
+    skills_adjacent: ["product", "data pipelines", "apis"],
+    target_roles: ["AI Engineer", "Full Stack Engineer", "Backend Engineer", "Developer Tools Engineer", "AI Product Engineer"],
+    avoid_roles: ["unpaid internship", "commission-only", "onsite-only"],
+    work_authorization: ["Brazil"],
+    accepted_regions: ["LATAM", "Worldwide", "Brazil", "Remote"],
+    salary_min_monthly_usd: 4000,
+    salary_target_monthly_usd: 7000,
+    contract_types: ["contractor", "full-time", "PJ", "B2B"]
+  };
+}
+
+function defaultSkillTaxonomy() {
+  return {
+    skills: {
+      languages: ["python", "typescript", "javascript", "go", "java", "ruby", "php", "sql"],
+      frontend: ["react", "next.js", "vue", "angular", "tailwind", "react native"],
+      backend: ["node.js", "express", "fastapi", "django", "rails", "graphql", "rest", "apis", "microservices"],
+      ai: ["ai", "llm", "rag", "agents", "openai", "anthropic", "langchain", "langgraph", "llamaindex", "embeddings", "vector databases", "prompt engineering"],
+      data: ["postgres", "mysql", "redis", "bigquery", "snowflake", "etl", "data pipelines", "analytics"],
+      cloud: ["aws", "gcp", "azure", "docker", "kubernetes", "terraform", "serverless", "vercel"],
+      product: ["product", "roadmap", "stakeholders", "experimentation", "analytics", "customer discovery"],
+      security: ["soc2", "security", "oauth", "sso", "compliance"]
+    },
+    role_families: {
+      ai_engineering: ["ai engineer", "llm engineer", "machine learning engineer", "ml engineer"],
+      full_stack: ["full stack", "fullstack"],
+      backend: ["backend", "back end", "api engineer"],
+      frontend: ["frontend", "front end"],
+      product: ["product manager", "technical product", "ai product"],
+      devtools: ["developer tools", "devtools", "platform engineer"]
+    },
+    responsibility_verbs: ["build", "design", "develop", "implement", "maintain", "lead", "integrate", "automate", "evaluate", "ship", "architect", "collaborate", "optimize"]
   };
 }
 

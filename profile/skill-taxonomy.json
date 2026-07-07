@@ -1,0 +1,128 @@
+{
+  "skills": {
+    "languages": [
+      "python",
+      "typescript",
+      "javascript",
+      "go",
+      "java",
+      "ruby",
+      "php",
+      "sql"
+    ],
+    "frontend": [
+      "react",
+      "next.js",
+      "vue",
+      "angular",
+      "tailwind",
+      "react native"
+    ],
+    "backend": [
+      "node.js",
+      "express",
+      "fastapi",
+      "django",
+      "rails",
+      "graphql",
+      "rest",
+      "apis",
+      "microservices"
+    ],
+    "ai": [
+      "ai",
+      "llm",
+      "rag",
+      "agents",
+      "openai",
+      "anthropic",
+      "langchain",
+      "langgraph",
+      "llamaindex",
+      "embeddings",
+      "vector databases",
+      "prompt engineering"
+    ],
+    "data": [
+      "postgres",
+      "mysql",
+      "redis",
+      "bigquery",
+      "snowflake",
+      "etl",
+      "data pipelines",
+      "analytics"
+    ],
+    "cloud": [
+      "aws",
+      "gcp",
+      "azure",
+      "docker",
+      "kubernetes",
+      "terraform",
+      "serverless",
+      "vercel"
+    ],
+    "product": [
+      "product",
+      "roadmap",
+      "stakeholders",
+      "experimentation",
+      "analytics",
+      "customer discovery"
+    ],
+    "security": [
+      "soc2",
+      "security",
+      "oauth",
+      "sso",
+      "compliance"
+    ]
+  },
+  "role_families": {
+    "ai_engineering": [
+      "ai engineer",
+      "llm engineer",
+      "machine learning engineer",
+      "ml engineer"
+    ],
+    "full_stack": [
+      "full stack",
+      "fullstack"
+    ],
+    "backend": [
+      "backend",
+      "back end",
+      "api engineer"
+    ],
+    "frontend": [
+      "frontend",
+      "front end"
+    ],
+    "product": [
+      "product manager",
+      "technical product",
+      "ai product"
+    ],
+    "devtools": [
+      "developer tools",
+      "devtools",
+      "platform engineer"
+    ]
+  },
+  "responsibility_verbs": [
+    "build",
+    "design",
+    "develop",
+    "implement",
+    "maintain",
+    "lead",
+    "integrate",
+    "automate",
+    "evaluate",
+    "ship",
+    "architect",
+    "collaborate",
+    "optimize"
+  ]
+}

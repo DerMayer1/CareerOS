@@ -28,6 +28,7 @@ career-os search remotive --query "AI Engineer" --limit 10
 career-os import examples/jobs.sample.json
 career-os normalize
 career-os dedupe
+career-os extract
 career-os score
 career-os report
 career-os show top

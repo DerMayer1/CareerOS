@@ -36,6 +36,7 @@ career-os show top
 | `career-os import <file>` | Import JSON, JSONL, or CSV jobs into `data/jobs_raw.jsonl` |
 | `career-os normalize` | Convert raw jobs into the CareerOS job model |
 | `career-os dedupe` | Deduplicate normalized jobs and update seen state |
+| `career-os extract` | Extract deterministic requirements and job signals |
 | `career-os score` | Apply deterministic baseline scoring |
 | `career-os report` | Export CSV tables and Markdown report |
 | `career-os show top [limit]` | Print top apply/maybe roles |
@@ -78,6 +79,7 @@ Search writes raw payloads to `data/jobs_raw.jsonl`. The same deterministic pipe
 ```bash
 career-os normalize
 career-os dedupe
+career-os extract
 career-os score
 career-os report
 career-os show top

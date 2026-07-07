@@ -1,0 +1,59 @@
+{
+  "name": "",
+  "location": "Brazil",
+  "timezone": "America/Sao_Paulo",
+  "languages": [],
+  "skills_strong": [
+    "python",
+    "typescript",
+    "ai",
+    "llm",
+    "automation"
+  ],
+  "skills_medium": [
+    "react",
+    "node.js",
+    "backend",
+    "postgres",
+    "docker"
+  ],
+  "skills_learning": [
+    "kubernetes",
+    "soc2",
+    "langchain"
+  ],
+  "skills_adjacent": [
+    "product",
+    "data pipelines",
+    "apis"
+  ],
+  "target_roles": [
+    "AI Engineer",
+    "Full Stack Engineer",
+    "Backend Engineer",
+    "Developer Tools Engineer",
+    "AI Product Engineer"
+  ],
+  "avoid_roles": [
+    "unpaid internship",
+    "commission-only",
+    "onsite-only"
+  ],
+  "work_authorization": [
+    "Brazil"
+  ],
+  "accepted_regions": [
+    "LATAM",
+    "Worldwide",
+    "Brazil",
+    "Remote"
+  ],
+  "salary_min_monthly_usd": 4000,
+  "salary_target_monthly_usd": 7000,
+  "contract_types": [
+    "contractor",
+    "full-time",
+    "PJ",
+    "B2B"
+  ]
+}
