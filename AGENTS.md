@@ -23,6 +23,8 @@ CareerOS is not a bulk application bot. It is a decision system for remote job o
 ```bash
 career-os init
 career-os profile check
+career-os sources list
+career-os search remotive --query "AI Engineer" --limit 10
 career-os import examples/jobs.sample.json
 career-os normalize
 career-os dedupe

@@ -30,6 +30,8 @@ career-os show top
 | Command | Purpose |
 |---|---|
 | `career-os init` | Create local folders, configs, profile templates, and data files |
+| `career-os sources list` | List configured remote sources |
+| `career-os search <source|all>` | Search remote sources and append raw jobs |
 | `career-os profile check` | Report missing/TODO profile fields |
 | `career-os import <file>` | Import JSON, JSONL, or CSV jobs into `data/jobs_raw.jsonl` |
 | `career-os normalize` | Convert raw jobs into the CareerOS job model |
@@ -54,3 +56,33 @@ Phase 1 intentionally avoids scraping and full application generation. It provid
 - Local files remain the source of truth.
 
 Remote connectors, AI-assisted extraction, full CV/carta generation, and company intelligence are later phases.
+
+## Remote Search
+
+Phase 2 adds public remote sources:
+
+```bash
+career-os sources list
+career-os search remotive --query "AI Engineer" --limit 10
+career-os search jobicy --query "python" --limit 10
+career-os search remoteok --query "backend" --limit 10
+career-os search wwr --query "full stack" --limit 10
+career-os search all --query "AI Engineer" --limit 20
+career-os search wellfound --query "AI Engineer"
+career-os search indeed_br --query "Python Developer"
+career-os search glassdoor_br --query "Backend Engineer"
+```
+
+Search writes raw payloads to `data/jobs_raw.jsonl`. The same deterministic pipeline still runs afterward:
+
+```bash
+career-os normalize
+career-os dedupe
+career-os score
+career-os report
+career-os show top
+```
+
+Use `--dry-run` to inspect results without writing raw jobs.
+
+Wellfound, Indeed Brazil, and Glassdoor Brazil are configured as manual search sources. They print search URLs and do not write fake job rows, because no low-risk public search API is configured for them.
