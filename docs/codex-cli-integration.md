@@ -1,6 +1,6 @@
 # Codex CLI Integration
 
-CareerOS integrates Codex CLI through `career-os ai ...`.
+CareerOS integrates Codex CLI through `career-os ai ...` and the provider module `src/ai/codex-cli-provider.js`.
 
 The deterministic pipeline remains responsible for import, normalization, dedupe, scoring, reporting, approvals, and tracker state. Codex is used only where language judgment helps.
 
@@ -38,3 +38,8 @@ The deterministic pipeline remains responsible for import, normalization, dedupe
 - Application commands also copy the response into the application workspace.
 - AI commands do not submit applications, contact employers, schedule meetings, or mutate scored jobs automatically.
 - Use `--dry-run` to inspect prompts without spending tokens.
+
+## Implementation Boundary
+
+- `src/cli.js` builds task-specific prompts and enforces CareerOS gates.
+- `src/ai/codex-cli-provider.js` runs `codex exec`, writes prompt/output artifacts, and powers `career-os ai doctor`.

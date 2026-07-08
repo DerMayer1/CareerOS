@@ -1,7 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const childProcess = require("child_process");
+const { createCodexCliProvider } = require("./ai/codex-cli-provider");
 const { APPLICATION_HEADERS, APPLICATION_STATUSES } = require("./applications/schema");
 const { dispatchAiCommand, dispatchCommand } = require("./cli/dispatch");
 const { printAiHelp, printHelp } = require("./cli/help");
@@ -12,6 +12,13 @@ const { createFileStore } = require("./storage/file-store");
 
 const { ROOT, OUTPUTS_DIR, PATHS } = createProjectPaths(process.cwd());
 const store = createFileStore({ paths: PATHS, root: ROOT });
+const codexProvider = createCodexCliProvider({
+  root: ROOT,
+  readConfig: () => readJson(PATHS.aiConfig, defaultAiConfig()),
+  ensureDirs,
+  relative,
+  slugify
+});
 
 function main(args) {
   return dispatchCommand(args, {
@@ -370,26 +377,7 @@ function runAiCommand(args) {
 
 function aiDoctor() {
   ensureDirs();
-  const config = readJson(PATHS.aiConfig, defaultAiConfig());
-  const pathProbe = probeCodexCommand(config, "path");
-  const versionProbe = probeCodexCommand(config, "version");
-  const execProbe = probeCodexCommand(config, "exec-help");
-  console.log(JSON.stringify({
-    provider: config.provider || "codex-cli",
-    enabled: config.enabled !== false,
-    command: config.command || "codex",
-    sandbox: config.sandbox || "workspace-write",
-    approval: config.approval || "never",
-    web_search: Boolean(config.web_search),
-    available: versionProbe.ok && execProbe.ok,
-    path: pathProbe.output.trim(),
-    version: versionProbe.output.trim(),
-    exec_help_available: execProbe.ok,
-    errors: [pathProbe, versionProbe, execProbe].filter((probe) => !probe.ok).map((probe) => ({
-      check: probe.check,
-      error: probe.error
-    }))
-  }, null, 2));
+  console.log(JSON.stringify(codexProvider.doctor(), null, 2));
 }
 
 function aiProfileSync(args) {
@@ -600,80 +588,7 @@ ${fence(JSON.stringify(workspaceFiles, null, 2), "json")}
 }
 
 function runCodexPrompt(label, prompt, flags = {}) {
-  ensureDirs();
-  const config = readJson(PATHS.aiConfig, defaultAiConfig());
-  const outputDir = path.resolve(ROOT, config.output_dir || "outputs/ai");
-  fs.mkdirSync(outputDir, { recursive: true });
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const safeLabel = slugify(label || "codex");
-  const promptPath = path.join(outputDir, `${timestamp}-${safeLabel}.prompt.md`);
-  const outputPath = path.join(outputDir, `${timestamp}-${safeLabel}.md`);
-  fs.writeFileSync(promptPath, prompt);
-
-  if (flags["dry-run"] || config.enabled === false) {
-    console.log(`Wrote prompt: ${relative(promptPath)}`);
-    if (config.enabled === false && !flags["dry-run"]) console.log("AI config is disabled; skipped Codex execution.");
-    return { promptPath, outputPath, skipped: true };
-  }
-
-  const codexArgs = [
-    "exec",
-    "--cd", ROOT,
-    "--sandbox", config.sandbox || "workspace-write",
-    "--ask-for-approval", config.approval || "never",
-    "--output-last-message", outputPath
-  ];
-  if (config.model) codexArgs.push("--model", config.model);
-  if (config.web_search) codexArgs.push("--search");
-  codexArgs.push("-");
-
-  const command = config.command || "codex";
-  try {
-    const output = runProcess(command, codexArgs, {
-      input: prompt,
-      timeout: Number(config.timeout_ms || 300000)
-    });
-    if (output.trim()) console.log(output.trim());
-  } catch (error) {
-    throw new Error(`Codex CLI failed. Prompt saved at ${relative(promptPath)}. ${error.message}`);
-  }
-
-  console.log(`Wrote prompt: ${relative(promptPath)}`);
-  console.log(`Wrote output: ${relative(outputPath)}`);
-  return { promptPath, outputPath, skipped: false };
-}
-
-function runProcess(command, args, options = {}) {
-  const common = {
-    cwd: ROOT,
-    input: options.input || "",
-    encoding: "utf8",
-    timeout: options.timeout || 30000,
-    maxBuffer: 1024 * 1024 * 20,
-    windowsHide: true
-  };
-  if (process.platform === "win32") {
-    const commandLine = [command, ...args].map(quoteCmdArg).join(" ");
-    return childProcess.execFileSync("cmd.exe", ["/d", "/s", "/c", commandLine], common);
-  }
-  return childProcess.execFileSync(command, args, common);
-}
-
-function probeCodexCommand(config, check) {
-  const command = config.command || "codex";
-  const argsByCheck = {
-    path: process.platform === "win32" ? ["/d", "/s", "/c", `where ${quoteCmdArg(command)}`] : ["-lc", `command -v ${shellQuote(command)}`],
-    version: process.platform === "win32" ? ["/d", "/s", "/c", `${quoteCmdArg(command)} --version`] : ["-lc", `${shellQuote(command)} --version`],
-    "exec-help": process.platform === "win32" ? ["/d", "/s", "/c", `${quoteCmdArg(command)} exec --help`] : ["-lc", `${shellQuote(command)} exec --help`]
-  };
-  try {
-    const output = process.platform === "win32"
-      ? childProcess.execFileSync("cmd.exe", argsByCheck[check], { cwd: ROOT, encoding: "utf8", timeout: 15000, maxBuffer: 1024 * 1024 * 2, windowsHide: true })
-      : childProcess.execFileSync("sh", argsByCheck[check], { cwd: ROOT, encoding: "utf8", timeout: 15000, maxBuffer: 1024 * 1024 * 2 });
-    return { check, ok: true, output, error: "" };
-  } catch (error) {
-    return { check, ok: false, output: error.stdout || "", error: (error.stderr || error.message || String(error)).trim() };
-  }
+  return codexProvider.runPrompt(label, prompt, flags);
 }
 
 function copyAiOutputToApplication(result, dir, fileName, flags) {
@@ -730,16 +645,6 @@ function truncateText(value, maxLength) {
 
 function fence(value, language) {
   return `\`\`\`${language || ""}\n${String(value || "").replace(/```/g, "` ` `")}\n\`\`\``;
-}
-
-function quoteCmdArg(value) {
-  const text = String(value);
-  if (!/[ \t&()^|<>"%]/.test(text)) return text;
-  return `"${text.replace(/"/g, '\\"')}"`;
-}
-
-function shellQuote(value) {
-  return `'${String(value).replace(/'/g, "'\\''")}'`;
 }
 
 function listApplications(limitArg) {
