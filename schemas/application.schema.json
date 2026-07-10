@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/DerMayer1/CareerOS/schemas/application.schema.json",
+  "title": "CareerOS application tracker row",
+  "type": "object",
+  "required": ["application_id", "job_id", "status"],
+  "properties": {
+    "application_id": { "type": "string", "minLength": 1 },
+    "job_id": { "type": "string", "minLength": 1 },
+    "status": { "enum": ["ready_to_apply", "drafted", "applied", "interviewing", "offer", "rejected", "withdrawn", "archived"] }
+  },
+  "additionalProperties": true
+}

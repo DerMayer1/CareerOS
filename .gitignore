@@ -1,4 +1,6 @@
 node_modules/
+.tmp-inspect/
+*.tgz
 data/jobs_raw.jsonl
 data/jobs_normalized.json
 data/seen_jobs.json

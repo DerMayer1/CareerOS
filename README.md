@@ -64,9 +64,9 @@ career-os show top
 | `career-os status` | Print current local state |
 | `career-os reset --data` | Clear local generated data |
 
-## Phase 1 Scope
+## Product Boundary
 
-Phase 1 intentionally avoids scraping and full application generation. It provides the Codex CLI foundation:
+CareerOS intentionally avoids bulk application submission. It provides a deterministic decision pipeline and gated, reviewable application workspaces:
 
 - `AGENTS.md` replaces `CLAUDE.md`.
 - CLI commands replace Claude slash commands.
@@ -74,7 +74,7 @@ Phase 1 intentionally avoids scraping and full application generation. It provid
 - Workflows are Markdown references for the CLI, not the operational surface.
 - Local files remain the source of truth.
 
-Remote connectors, AI-assisted extraction, full CV/carta generation, and company intelligence are later phases.
+Public connectors, deterministic extraction/scoring, application drafting, interview preparation, and the optional Codex layer are implemented. CareerOS still never submits applications or contacts employers.
 
 ## Codex CLI Integration
 
@@ -85,16 +85,20 @@ Configure it in `config/ai.json`:
 ```json
 {
   "provider": "codex-cli",
-  "enabled": true,
+  "enabled": false,
   "command": "codex",
   "model": "",
-  "sandbox": "workspace-write",
+  "sandbox": "read-only",
   "approval": "never",
   "output_dir": "outputs/ai",
   "web_search": false,
-  "timeout_ms": 300000
+  "timeout_ms": 300000,
+  "max_prompt_chars": 120000,
+  "max_output_chars": 120000
 }
 ```
+
+AI is opt-in and read-only by default. Enable it only after reviewing `config/ai.json`. Using `workspace-write` additionally requires `allow_workspace_write: true`.
 
 Typical use:
 
@@ -206,3 +210,12 @@ career-os applications status <application_id> applied
 - `application-message.md`
 - `cover-letter.md`
 - `interview-prep.md`
+
+## Development Verification
+
+```bash
+npm ci
+npm run ci
+```
+
+The CI command performs syntax checks, unit and end-to-end tests, and validates the exact npm package manifest. GitHub Actions runs it on Node 18, 20, and 22 across Linux, Windows, and macOS.

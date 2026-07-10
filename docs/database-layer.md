@@ -8,6 +8,8 @@ Current backend:
 - JSONL for raw imported jobs
 - JSON for normalized jobs, seen state, and source cache
 - CSV for application tracker
+- JSON Schemas under `schemas/` for the public data contracts
+- Atomic replace-on-success writes for state and generated artifacts
 
 The CLI should call the store instead of reading or writing `data/*` files directly.
 
@@ -38,3 +40,4 @@ The next backend can be SQLite without changing command handlers:
 ## Boundaries
 
 Configuration and profile files remain plain local files for now. They are operator-owned inputs, not database records.
+Runtime validators reject malformed jobs, tracker rows, scoring weights, search profiles, source configuration, candidate profiles, and AI configuration before those values reach critical operations.

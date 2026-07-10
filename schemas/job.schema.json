@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/DerMayer1/CareerOS/schemas/job.schema.json",
+  "title": "CareerOS normalized job",
+  "type": "object",
+  "required": ["id", "title", "company"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "title": { "type": "string", "minLength": 1 },
+    "company": { "type": "string", "minLength": 1 },
+    "state": { "type": "string" },
+    "source_site": { "type": "string" },
+    "source_url": { "type": "string" },
+    "apply_url": { "type": "string" },
+    "score_fit": { "type": "number", "minimum": 0, "maximum": 100 },
+    "recommendation": { "enum": ["unscored", "apply", "maybe", "watch", "skip"] },
+    "red_flags": { "type": "array", "items": { "type": "object" } },
+    "score_explanation": { "type": "object" }
+  },
+  "additionalProperties": true
+}

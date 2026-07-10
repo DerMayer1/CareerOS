@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/DerMayer1/CareerOS/schemas/scoring-weights.schema.json",
+  "title": "CareerOS scoring weights",
+  "type": "object",
+  "required": ["skills", "experience", "salary", "remote_compatibility", "company_quality", "growth_potential", "application_friction"],
+  "properties": {
+    "skills": { "type": "number", "minimum": 0, "maximum": 100 },
+    "experience": { "type": "number", "minimum": 0, "maximum": 100 },
+    "salary": { "type": "number", "minimum": 0, "maximum": 100 },
+    "remote_compatibility": { "type": "number", "minimum": 0, "maximum": 100 },
+    "company_quality": { "type": "number", "minimum": 0, "maximum": 100 },
+    "growth_potential": { "type": "number", "minimum": 0, "maximum": 100 },
+    "application_friction": { "type": "number", "minimum": 0, "maximum": 100 }
+  },
+  "additionalProperties": false
+}

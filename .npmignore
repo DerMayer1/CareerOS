@@ -1,0 +1,10 @@
+.tmp-inspect/
+.git/
+.github/
+data/
+outputs/
+profile/
+scripts/
+test/
+*.tgz
+*.log

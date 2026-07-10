@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/DerMayer1/CareerOS/schemas/candidate-profile.schema.json",
+  "title": "CareerOS candidate profile",
+  "type": "object",
+  "required": ["name", "location", "timezone", "languages", "skills_strong", "skills_medium", "skills_learning", "skills_adjacent", "target_roles", "avoid_roles", "work_authorization", "accepted_regions", "salary_min_monthly_usd", "salary_target_monthly_usd", "contract_types"],
+  "properties": {
+    "name": { "type": "string" },
+    "location": { "type": "string" },
+    "timezone": { "type": "string", "minLength": 1 },
+    "languages": { "$ref": "#/$defs/stringArray" },
+    "skills_strong": { "$ref": "#/$defs/stringArray" },
+    "skills_medium": { "$ref": "#/$defs/stringArray" },
+    "skills_learning": { "$ref": "#/$defs/stringArray" },
+    "skills_adjacent": { "$ref": "#/$defs/stringArray" },
+    "target_roles": { "$ref": "#/$defs/stringArray" },
+    "avoid_roles": { "$ref": "#/$defs/stringArray" },
+    "work_authorization": { "$ref": "#/$defs/stringArray" },
+    "accepted_regions": { "$ref": "#/$defs/stringArray" },
+    "salary_min_monthly_usd": { "type": "number", "minimum": 0 },
+    "salary_target_monthly_usd": { "type": "number", "minimum": 0 },
+    "contract_types": { "$ref": "#/$defs/stringArray" }
+  },
+  "$defs": {
+    "stringArray": { "type": "array", "items": { "type": "string" } }
+  },
+  "additionalProperties": false
+}

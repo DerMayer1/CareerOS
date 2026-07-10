@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/DerMayer1/CareerOS/schemas/ai.schema.json",
+  "title": "CareerOS AI configuration",
+  "type": "object",
+  "required": ["provider", "enabled", "command", "sandbox", "approval", "output_dir", "web_search", "timeout_ms", "max_prompt_chars", "max_output_chars"],
+  "properties": {
+    "provider": { "const": "codex-cli" },
+    "enabled": { "type": "boolean", "default": false },
+    "command": { "type": "string", "minLength": 1 },
+    "model": { "type": "string" },
+    "sandbox": { "enum": ["read-only", "workspace-write"], "default": "read-only" },
+    "allow_workspace_write": { "type": "boolean", "default": false },
+    "approval": { "enum": ["never", "on-request", "untrusted"] },
+    "output_dir": { "type": "string", "minLength": 1 },
+    "web_search": { "type": "boolean", "default": false },
+    "timeout_ms": { "type": "number", "minimum": 1000, "maximum": 900000 },
+    "max_prompt_chars": { "type": "number", "minimum": 1000, "maximum": 1000000 },
+    "max_output_chars": { "type": "number", "minimum": 1000, "maximum": 1000000 }
+  },
+  "additionalProperties": false
+}

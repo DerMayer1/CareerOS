@@ -3,6 +3,8 @@
 const fs = require("fs");
 const path = require("path");
 const { APPLICATION_HEADERS } = require("../applications/schema");
+const { validateApplicationRows, validateJobs } = require("../core/validation");
+const { appendFileAtomicSync, writeFileAtomicSync } = require("./atomic-file");
 
 function createFileStore({ paths, root }) {
   if (!paths) throw new Error("createFileStore requires paths");
@@ -15,14 +17,15 @@ function createFileStore({ paths, root }) {
     if (!jobs.length) return;
     const now = new Date().toISOString();
     const lines = jobs.map((job) => JSON.stringify({ imported_at: now, ...meta, raw: job }));
-    fs.appendFileSync(paths.rawJobs, lines.join("\n") + "\n");
+    appendFileAtomicSync(paths.rawJobs, lines.join("\n") + "\n");
   }
 
   function readNormalizedJobs() {
-    return readJson(paths.normalizedJobs, []);
+    return validateJobs(readJson(paths.normalizedJobs, []));
   }
 
   function writeNormalizedJobs(jobs) {
+    validateJobs(jobs);
     writeJson(paths.normalizedJobs, jobs);
   }
 
@@ -55,17 +58,18 @@ function createFileStore({ paths, root }) {
   function readApplications() {
     if (!fs.existsSync(paths.applications)) return [];
     const text = fs.readFileSync(paths.applications, "utf8").trim();
-    return text ? parseCsv(text) : [];
+    return validateApplicationRows(text ? parseCsv(text) : []);
   }
 
   function writeApplications(rows) {
+    validateApplicationRows(rows);
     const csv = `${APPLICATION_HEADERS.join(",")}\n${rows.map((item) => APPLICATION_HEADERS.map((header) => csvEscape(item[header])).join(",")).join("\n")}\n`;
-    fs.writeFileSync(paths.applications, csv);
+    writeFileAtomicSync(paths.applications, csv);
   }
 
   function resetData() {
-    fs.writeFileSync(paths.rawJobs, "");
-    fs.writeFileSync(paths.normalizedJobs, "[]\n");
+    writeFileAtomicSync(paths.rawJobs, "");
+    writeFileAtomicSync(paths.normalizedJobs, "[]\n");
     writeSeenJobs({ seen: {} });
     writeApplications([]);
     cleanDir(paths.reports);
@@ -100,7 +104,7 @@ function readJson(filePath, fallback) {
 }
 
 function writeJson(filePath, value) {
-  fs.writeFileSync(filePath, JSON.stringify(value, null, 2) + "\n");
+  writeFileAtomicSync(filePath, JSON.stringify(value, null, 2) + "\n");
 }
 
 function readJsonl(filePath) {

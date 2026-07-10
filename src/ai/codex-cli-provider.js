@@ -1,8 +1,11 @@
 "use strict";
 
 const childProcess = require("child_process");
+const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
+const { validateAiConfig } = require("../core/validation");
+const { writeFileAtomicSync } = require("../storage/atomic-file");
 
 function createCodexCliProvider(options) {
   const {
@@ -15,7 +18,7 @@ function createCodexCliProvider(options) {
   } = options;
 
   function doctor() {
-    const config = readConfig();
+    const config = validateAiConfig(readConfig());
     const pathProbe = probeCodexCommand(root, config, "path");
     const versionProbe = probeCodexCommand(root, config, "version");
     const execProbe = probeCodexCommand(root, config, "exec-help");
@@ -39,14 +42,20 @@ function createCodexCliProvider(options) {
 
   function runPrompt(label, prompt, flags = {}) {
     ensureDirs();
-    const config = readConfig();
+    const config = validateAiConfig(readConfig());
+    if (prompt.length > config.max_prompt_chars) {
+      throw new Error(`AI prompt exceeds max_prompt_chars (${prompt.length} > ${config.max_prompt_chars}).`);
+    }
     const outputDir = path.resolve(root, config.output_dir || "outputs/ai");
     fs.mkdirSync(outputDir, { recursive: true });
+    if (!isPathInside(fs.realpathSync(root), fs.realpathSync(outputDir))) {
+      throw new Error("AI output_dir must stay inside the CareerOS workspace.");
+    }
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
     const safeLabel = slugify(label || "codex");
     const promptPath = path.join(outputDir, `${timestamp}-${safeLabel}.prompt.md`);
     const outputPath = path.join(outputDir, `${timestamp}-${safeLabel}.md`);
-    fs.writeFileSync(promptPath, prompt);
+    writeFileAtomicSync(promptPath, prompt);
 
     if (flags["dry-run"] || config.enabled === false) {
       log(`Wrote prompt: ${relative(promptPath)}`);
@@ -54,12 +63,13 @@ function createCodexCliProvider(options) {
       return { promptPath, outputPath, skipped: true };
     }
 
+    const partialOutputPath = `${outputPath}.${process.pid}.${crypto.randomBytes(6).toString("hex")}.partial`;
     const codexArgs = [
       "exec",
       "--cd", root,
-      "--sandbox", config.sandbox || "workspace-write",
+      "--sandbox", config.sandbox || "read-only",
       "--ask-for-approval", config.approval || "never",
-      "--output-last-message", outputPath
+      "--output-last-message", partialOutputPath
     ];
     if (config.model) codexArgs.push("--model", config.model);
     if (config.web_search) codexArgs.push("--search");
@@ -72,8 +82,16 @@ function createCodexCliProvider(options) {
         timeout: Number(config.timeout_ms || 300000)
       });
       if (output.trim()) log(output.trim());
+      if (!fs.existsSync(partialOutputPath)) throw new Error("Codex did not produce an output file.");
+      const response = fs.readFileSync(partialOutputPath, "utf8");
+      if (response.length > config.max_output_chars) {
+        throw new Error(`AI output exceeds max_output_chars (${response.length} > ${config.max_output_chars}).`);
+      }
+      writeFileAtomicSync(outputPath, response);
     } catch (error) {
       throw new Error(`Codex CLI failed. Prompt saved at ${relative(promptPath)}. ${error.message}`);
+    } finally {
+      try { fs.unlinkSync(partialOutputPath); } catch {}
     }
 
     log(`Wrote prompt: ${relative(promptPath)}`);
@@ -85,6 +103,11 @@ function createCodexCliProvider(options) {
     doctor,
     runPrompt
   };
+}
+
+function isPathInside(root, target) {
+  const relative = path.relative(path.resolve(root), path.resolve(target));
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
 function runProcess(root, command, args, options = {}) {
@@ -123,7 +146,7 @@ function probeCodexCommand(root, config, check) {
 function quoteCmdArg(value) {
   const text = String(value);
   if (!/[ \t&()^|<>"%]/.test(text)) return text;
-  return `"${text.replace(/"/g, '\\"')}"`;
+  return `"${text.replace(/%/g, "%%").replace(/"/g, '\\"')}"`;
 }
 
 function shellQuote(value) {

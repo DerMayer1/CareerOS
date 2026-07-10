@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/DerMayer1/CareerOS/schemas/search-profile.schema.json",
+  "title": "CareerOS search profile",
+  "type": "object",
+  "required": ["locations", "remote_modes", "job_age_days", "target_roles", "keywords_required_any", "keywords_excluded", "salary_min_monthly_usd", "timezone"],
+  "properties": {
+    "locations": { "$ref": "#/$defs/stringArray" },
+    "remote_modes": { "$ref": "#/$defs/stringArray" },
+    "job_age_days": { "type": "number", "minimum": 1, "maximum": 365 },
+    "target_roles": { "$ref": "#/$defs/stringArray" },
+    "keywords_required_any": { "$ref": "#/$defs/stringArray" },
+    "keywords_excluded": { "$ref": "#/$defs/stringArray" },
+    "salary_min_monthly_usd": { "type": "number", "minimum": 0 },
+    "timezone": { "type": "string", "minLength": 1 }
+  },
+  "$defs": {
+    "stringArray": { "type": "array", "items": { "type": "string" } }
+  },
+  "additionalProperties": false
+}

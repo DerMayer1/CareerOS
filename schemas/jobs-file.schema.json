@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/DerMayer1/CareerOS/schemas/jobs-file.schema.json",
+  "title": "CareerOS normalized jobs file",
+  "type": "array",
+  "items": { "$ref": "job.schema.json" }
+}

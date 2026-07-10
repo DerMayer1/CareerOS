@@ -3,6 +3,22 @@
   "version": "0.1.0",
   "description": "Local-first CLI radar for remote job opportunities.",
   "type": "commonjs",
+  "files": [
+    "AGENTS.md",
+    "LICENSE",
+    "README.md",
+    "SETUP.md",
+    "bin/",
+    "config/",
+    "docs/",
+    "examples/",
+    "schemas/",
+    "skills/",
+    "sources/",
+    "src/",
+    "templates/",
+    "workflows/"
+  ],
   "bin": {
     "career-os": "bin/career-os.js",
     "remote-radar": "bin/career-os.js"
@@ -20,10 +36,29 @@
     "profile:check": "node bin/career-os.js profile check",
     "ai": "node bin/career-os.js ai",
     "ai:doctor": "node bin/career-os.js ai doctor",
-    "show:top": "node bin/career-os.js show top"
+    "show:top": "node bin/career-os.js show top",
+    "check": "node scripts/check-syntax.js",
+    "test": "node --test",
+    "test:package": "node scripts/check-package.js",
+    "ci": "npm run check && npm test && npm run test:package"
   },
   "engines": {
     "node": ">=18"
   },
-  "license": "UNLICENSED"
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DerMayer1/CareerOS.git"
+  },
+  "bugs": {
+    "url": "https://github.com/DerMayer1/CareerOS/issues"
+  },
+  "homepage": "https://github.com/DerMayer1/CareerOS#readme",
+  "keywords": [
+    "career",
+    "jobs",
+    "remote-work",
+    "cli",
+    "codex"
+  ],
+  "license": "MIT"
 }
