@@ -115,14 +115,25 @@ function validateCandidateProfile(value) {
 
 function validateSourcesConfig(value) {
   const config = assertObject(value, "sources config");
+  if (config.cache_max_entries === undefined) config.cache_max_entries = 250;
   assertFiniteNumber(config.default_limit, "sources config.default_limit", { min: 1, max: 1000 });
   assertFiniteNumber(config.cache_ttl_hours, "sources config.cache_ttl_hours", { min: 0, max: 8760 });
+  assertFiniteNumber(config.cache_max_entries, "sources config.cache_max_entries", { min: 1, max: 10000 });
   const sources = assertObject(config.sources, "sources config.sources");
   for (const [name, source] of Object.entries(sources)) {
     assertObject(source, `source ${name}`);
     if (typeof source.enabled !== "boolean") throw validationError(`source ${name}.enabled`, "expected a boolean");
     assertString(source.type, `source ${name}.type`);
     if (source.max_limit !== undefined) assertFiniteNumber(source.max_limit, `source ${name}.max_limit`, { min: 0, max: 1000 });
+    for (const key of ["base_url", "feed_url"]) {
+      if (!source[key]) continue;
+      try {
+        const url = new URL(source[key]);
+        if (!["http:", "https:"].includes(url.protocol)) throw new Error("unsupported protocol");
+      } catch (error) {
+        throw validationError(`source ${name}.${key}`, `expected an HTTP(S) URL: ${error.message}`);
+      }
+    }
   }
   return config;
 }

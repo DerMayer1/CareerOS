@@ -1,5 +1,9 @@
 # Sources
 
+Automatic sources are queried concurrently by `career-os search all`. Each provider has independent failure reporting, and one outage does not discard successful results from other providers.
+
+HTTP requests use bounded retries, timeouts, redirect limits, and response-size limits. Search cache retention is configured with `cache_ttl_hours` and `cache_max_entries` in `config/sources.json`.
+
 Remote source connectors are implemented in Phase 2.
 
 Configured sources live in `config/sources.json`.

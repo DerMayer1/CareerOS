@@ -1,10 +1,14 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const dns = require("dns/promises");
 const { createCodexCliProvider } = require("./ai/codex-cli-provider");
 const { APPLICATION_HEADERS, APPLICATION_STATUSES } = require("./applications/schema");
 const { dispatchAiCommand, dispatchCommand } = require("./cli/dispatch");
 const { printAiHelp, printHelp } = require("./cli/help");
+const { parseCsv: parseCsvDocument } = require("./core/csv");
+const { dedupeJobs: dedupeJobRecords } = require("./core/dedupe");
+const { parseFlags: parseCommandFlags, usageError } = require("./core/flags");
 const { createProjectPaths } = require("./core/paths");
 const {
   validateAiConfig,
@@ -15,6 +19,7 @@ const {
 } = require("./core/validation");
 const { buildTables, scoreJob, toTableRow } = require("./scoring/engine");
 const { buildManualSearchUrl, searchProvider } = require("./sources/providers");
+const { collectProfileSetup } = require("./profile/setup");
 const { writeFileAtomicSync } = require("./storage/atomic-file");
 const { createFileStore } = require("./storage/file-store");
 
@@ -33,6 +38,7 @@ function main(args) {
     approveJob,
     checkProfile,
     dedupeJobs,
+    doctor,
     explainJob,
     extractJobs,
     generateApplicationArtifact,
@@ -44,6 +50,7 @@ function main(args) {
     listSources,
     normalizeJobs,
     printHelp,
+    profileSetup,
     resetData,
     runAiCommand,
     runPipeline,
@@ -114,7 +121,14 @@ async function searchJobs(args) {
   const sourceName = args[0];
   if (!sourceName) throw new Error("Missing source. Usage: career-os search <source|all> --query \"AI Engineer\" --limit 20");
   ensureDirs();
-  const flags = parseFlags(args.slice(1));
+  const flags = parseCommandFlags(args.slice(1), {
+    query: "string",
+    limit: { type: "number", min: 1, max: 1000 },
+    "dry-run": "boolean",
+    "no-cache": "boolean",
+    days: { type: "number", min: 1, max: 365 },
+    location: "string"
+  }, "search");
   const config = validateSourcesConfig(readJson(PATHS.sourcesConfig, defaultSourcesConfig()));
   const sources = config.sources || {};
   const selected = sourceName === "all"
@@ -123,6 +137,8 @@ async function searchJobs(args) {
 
   const allJobs = [];
   const manualLinks = [];
+  const automatic = [];
+  const cacheState = { data: store.readSourceCache(), dirty: false };
   for (const name of selected) {
     if (!sources[name]) throw new Error(`Unknown source: ${name}`);
     if (sources[name].enabled === false) continue;
@@ -130,12 +146,29 @@ async function searchJobs(args) {
       manualLinks.push({ source: name, url: buildManualSearchUrl(sources[name], flags.query || "") });
       continue;
     }
-    const jobs = await searchSource(name, sources[name], flags, config);
-    allJobs.push(...jobs.map((job) => ({ ...job, source_site: job.source_site || name })));
+    automatic.push({ name, source: sources[name] });
+  }
+
+  const failures = [];
+  const results = await Promise.allSettled(automatic.map(({ name, source }) => searchSource(name, source, flags, config, cacheState)));
+  results.forEach((result, index) => {
+    const { name } = automatic[index];
+    if (result.status === "fulfilled") {
+      allJobs.push(...result.value.map((job) => ({ ...job, source_site: job.source_site || name })));
+    } else {
+      failures.push({ source: name, error: result.reason.message });
+    }
+  });
+  if (sourceName !== "all" && failures.length) {
+    throw new Error(`Search failed for ${failures[0].source}: ${failures[0].error}`);
+  }
+  if (cacheState.dirty) {
+    pruneSearchCache(cacheState.data, config.cache_max_entries || 250);
+    store.writeSourceCache(cacheState.data);
   }
 
   if (flags["dry-run"]) {
-    console.log(JSON.stringify({ dry_run: true, count: allJobs.length, jobs: allJobs.slice(0, Number(flags.limit || 10)), manual_links: manualLinks }, null, 2));
+    console.log(JSON.stringify({ dry_run: true, count: allJobs.length, jobs: allJobs.slice(0, Number(flags.limit || 10)), manual_links: manualLinks, failures }, null, 2));
     return;
   }
 
@@ -143,24 +176,39 @@ async function searchJobs(args) {
   if (manualLinks.length) {
     for (const link of manualLinks) console.log(`${link.source}: ${link.url}`);
   }
+  if (failures.length) {
+    for (const failure of failures) console.error(`Source ${failure.source} failed: ${failure.error}`);
+  }
   console.log(`Search complete. Wrote ${allJobs.length} raw jobs into ${relative(PATHS.rawJobs)}.`);
 }
 
-async function searchSource(name, source, flags, config) {
+async function searchSource(name, source, flags, config, cacheState = { data: store.readSourceCache(), dirty: false }) {
   const query = String(flags.query || "");
   const limit = Math.max(1, Math.min(Number(flags.limit || config.default_limit || 25), source.max_limit || 100));
   const cacheKey = stableId([name, query, limit, flags.days || "", flags.location || ""]);
-  const cache = store.readSourceCache();
+  const cache = cacheState.data;
+  if (!cache.searches || typeof cache.searches !== "object") cache.searches = {};
   const cacheTtlHours = Number(config.cache_ttl_hours || 6);
   const cached = cache.searches[cacheKey];
   if (!flags["no-cache"] && cached && Date.now() - Date.parse(cached.fetched_at) < cacheTtlHours * 60 * 60 * 1000) {
     return cached.jobs.slice(0, limit);
   }
 
-  const jobs = await searchProvider(name, source, { query, limit, flags });
+  let jobs;
+  try {
+    jobs = await searchProvider(name, source, { query, limit, flags });
+  } catch (error) {
+    if (!flags["no-cache"] && cached && Array.isArray(cached.jobs)) {
+      console.error(`Source ${name} failed; using stale cache from ${cached.fetched_at}. ${error.message}`);
+      return cached.jobs.slice(0, limit);
+    }
+    throw error;
+  }
 
-  cache.searches[cacheKey] = { source: name, query, limit, fetched_at: new Date().toISOString(), jobs };
-  store.writeSourceCache(cache);
+  if (!flags["dry-run"]) {
+    cache.searches[cacheKey] = { source: name, query, limit, fetched_at: new Date().toISOString(), jobs };
+    cacheState.dirty = true;
+  }
   return jobs.slice(0, limit);
 }
 
@@ -170,10 +218,19 @@ function importJobs(filePath) {
   const absolute = path.resolve(ROOT, filePath);
   const text = fs.readFileSync(absolute, "utf8");
   const ext = path.extname(absolute).toLowerCase();
-  const jobs = ext === ".csv" ? parseCsv(text) : parseJsonOrJsonl(text);
+  const parsed = ext === ".csv"
+    ? { jobs: parseCsvDocument(text), errors: [] }
+    : parseJsonOrJsonl(text, ext);
+  const jobs = parsed.jobs;
   if (!jobs.length) throw new Error("No jobs found in input file.");
 
   store.appendRawJobs(jobs, { source_file: absolute });
+  if (parsed.errors.length) {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const errorPath = path.join(PATHS.importErrors, `${timestamp}-import-errors.json`);
+    writeFileAtomicSync(errorPath, JSON.stringify({ source_file: absolute, rejected: parsed.errors }, null, 2) + "\n");
+    console.error(`Skipped ${parsed.errors.length} invalid JSONL rows. Details: ${relative(errorPath)}`);
+  }
   console.log(`Imported ${jobs.length} raw jobs into ${relative(PATHS.rawJobs)}.`);
 }
 
@@ -243,7 +300,7 @@ function runPipeline(args) {
 }
 
 function showTop(limitArg) {
-  const limit = Math.max(1, Number(limitArg || 10));
+  const limit = parseLimit(limitArg, 10, "show top");
   const jobs = store.readNormalizedJobs()
     .filter((job) => job.recommendation === "apply" || job.recommendation === "maybe")
     .sort((a, b) => (b.score_fit || 0) - (a.score_fit || 0))
@@ -260,7 +317,7 @@ function showTop(limitArg) {
 function showTable(tableName, limitArg) {
   const allowed = new Set(["top_matches", "high_salary_medium_fit", "easy_wins", "stretch_roles", "skip", "skill_gap_heatmap", "red_flags", "salary_transparency", "remote_fit", "best_next_actions"]);
   if (!allowed.has(tableName)) throw new Error(`Unknown table: ${tableName}`);
-  const limit = Math.max(1, Number(limitArg || 25));
+  const limit = parseLimit(limitArg, 25, "show table");
   const tablePath = path.join(PATHS.tables, `${tableName}.csv`);
   if (!fs.existsSync(tablePath)) throw new Error(`Missing ${relative(tablePath)}. Run: career-os report`);
   const rows = fs.readFileSync(tablePath, "utf8").trim().split(/\r?\n/);
@@ -310,7 +367,7 @@ function explainJob(jobId) {
 }
 
 function showExtracted(limitArg) {
-  const limit = Math.max(1, Number(limitArg || 10));
+  const limit = parseLimit(limitArg, 10, "show extracted");
   const jobs = store.readNormalizedJobs().slice(0, limit).map((job) => ({
     id: job.id,
     company: job.company,
@@ -350,8 +407,122 @@ function showStatus() {
   console.log(JSON.stringify(status, null, 2));
 }
 
+async function doctor(args = []) {
+  ensureDirs();
+  const flags = parseCommandFlags(args, {
+    network: "boolean",
+    strict: "boolean"
+  }, "doctor");
+  const checks = [];
+
+  checks.push({
+    name: "node",
+    level: "critical",
+    ok: Number(process.versions.node.split(".")[0]) >= 18,
+    detail: `Node ${process.versions.node}; required >=18`
+  });
+
+  try {
+    fs.accessSync(ROOT, fs.constants.R_OK | fs.constants.W_OK);
+    checks.push({ name: "workspace", level: "critical", ok: true, detail: ROOT });
+  } catch (error) {
+    checks.push({ name: "workspace", level: "critical", ok: false, detail: error.message });
+  }
+
+  runDoctorCheck(checks, "configuration", "critical", () => {
+    validateSearchProfile(readJson(PATHS.searchProfile, defaultSearchProfile()));
+    validateScoringWeights(readJson(PATHS.scoringWeights, defaultScoringWeights()));
+    validateSourcesConfig(readJson(PATHS.sourcesConfig, defaultSourcesConfig()));
+    validateAiConfig(readJson(PATHS.aiConfig, defaultAiConfig()));
+    readCandidateProfile();
+    return "configuration and profile schemas are valid";
+  });
+
+  runDoctorCheck(checks, "data", "critical", () => {
+    store.readRawJobs();
+    store.readNormalizedJobs();
+    store.readApplications();
+    store.readSeenJobs();
+    store.readSourceCache();
+    return "local data files are readable";
+  });
+
+  const profile = buildProfileChecks();
+  checks.push({
+    name: "profile",
+    level: "warning",
+    ok: profile.ready,
+    detail: profile.ready ? "profile is ready" : `${profile.checks.filter((check) => !check.ready).length} profile files need attention`
+  });
+
+  const aiConfig = validateAiConfig(readJson(PATHS.aiConfig, defaultAiConfig()));
+  if (aiConfig.enabled) {
+    runDoctorCheck(checks, "codex", "warning", () => {
+      const result = codexProvider.doctor();
+      if (!result.available) throw new Error(result.errors.map((item) => item.error).join("; ") || "Codex CLI unavailable");
+      return result.version;
+    });
+  } else {
+    checks.push({ name: "codex", level: "info", ok: true, detail: "AI is disabled; deterministic pipeline is available" });
+  }
+
+  if (flags.network) {
+    const sources = validateSourcesConfig(readJson(PATHS.sourcesConfig, defaultSourcesConfig()));
+    const hosts = [...new Set(Object.values(sources.sources)
+      .filter((source) => source.enabled !== false)
+      .map((source) => source.base_url || source.feed_url)
+      .filter(Boolean)
+      .map((value) => new URL(value).hostname))];
+    const results = await Promise.allSettled(hosts.map((host) => dns.lookup(host)));
+    results.forEach((result, index) => checks.push({
+      name: `network:${hosts[index]}`,
+      level: "warning",
+      ok: result.status === "fulfilled",
+      detail: result.status === "fulfilled" ? result.value.address : result.reason.message
+    }));
+  } else {
+    checks.push({ name: "network", level: "info", ok: true, detail: "not checked; use --network" });
+  }
+
+  const healthy = checks.filter((check) => check.level === "critical").every((check) => check.ok);
+  const warnings = checks.filter((check) => check.level === "warning" && !check.ok).length;
+  console.log(JSON.stringify({ healthy, warnings, checks }, null, 2));
+  if (!healthy || (flags.strict && warnings)) process.exitCode = 1;
+}
+
+async function profileSetup(args = []) {
+  ensureDirs();
+  const flags = parseCommandFlags(args, {
+    yes: "boolean",
+    name: "string",
+    location: "string",
+    timezone: "string",
+    roles: "string",
+    skills: "string",
+    regions: "string",
+    "salary-min": { type: "number", min: 0, max: 1000000 },
+    "salary-target": { type: "number", min: 0, max: 1000000 },
+    "contract-types": "string"
+  }, "profile setup");
+  const currentProfile = readCandidateProfile();
+  const currentSearch = validateSearchProfile(readJson(PATHS.searchProfile, defaultSearchProfile()));
+  const setup = await collectProfileSetup({ flags, currentProfile, currentSearch });
+  validateCandidateProfile(setup.profile);
+  validateSearchProfile(setup.search);
+  writeFileAtomicSync(PATHS.candidateProfileJson, JSON.stringify(setup.profile, null, 2) + "\n");
+  writeFileAtomicSync(PATHS.searchProfile, JSON.stringify(setup.search, null, 2) + "\n");
+  writeFileAtomicSync(PATHS.candidateProfile, setup.profileMarkdown);
+  writeFileAtomicSync(PATHS.rolePreferences, setup.preferencesMarkdown);
+  console.log("Profile setup complete.");
+  checkProfile();
+}
+
 function checkProfile() {
   ensureDirs();
+  console.log(JSON.stringify(buildProfileChecks(), null, 2));
+}
+
+function buildProfileChecks() {
   const checks = [
     ["candidate profile", PATHS.candidateProfile],
     ["candidate profile json", PATHS.candidateProfileJson],
@@ -366,7 +537,15 @@ function checkProfile() {
     const parseError = filePath.endsWith(".json") ? jsonParseError(text) : "";
     return { label, path: relative(filePath), exists, todo_count: todoCount, parse_error: parseError || null, ready: exists && todoCount === 0 && !parseError };
   });
-  console.log(JSON.stringify({ ready: checks.every((check) => check.ready), checks }, null, 2));
+  return { ready: checks.every((check) => check.ready), checks };
+}
+
+function runDoctorCheck(checks, name, level, operation) {
+  try {
+    checks.push({ name, level, ok: true, detail: operation() });
+  } catch (error) {
+    checks.push({ name, level, ok: false, detail: error.message });
+  }
 }
 
 function runAiCommand(args) {
@@ -389,7 +568,7 @@ function aiDoctor() {
 }
 
 function aiProfileSync(args) {
-  const flags = parseFlags(args);
+  const flags = parseCommandFlags(args, { "dry-run": "boolean" }, "ai profile-sync");
   const prompt = aiPrompt("Profile Sync", `
 Review the CareerOS profile files and return practical profile improvements.
 
@@ -419,7 +598,10 @@ ${fence(JSON.stringify(readJson(PATHS.skillTaxonomy, defaultSkillTaxonomy()), nu
 function aiExtract(args) {
   const target = args[0];
   if (!target) throw new Error("Usage: career-os ai extract <job_id|new> [--limit 5] [--dry-run]");
-  const flags = parseFlags(args.slice(1));
+  const flags = parseCommandFlags(args.slice(1), {
+    limit: { type: "number", min: 1, max: 20 },
+    "dry-run": "boolean"
+  }, "ai extract");
   const limit = Math.max(1, Math.min(Number(flags.limit || 5), 20));
   const jobs = store.readNormalizedJobs();
   const selected = target === "new"
@@ -446,7 +628,7 @@ ${fence(JSON.stringify(selected.map(aiJobPayload), null, 2), "json")}
 function aiReviewFit(args) {
   const jobId = args[0];
   if (!isValidIdArg(jobId)) throw new Error("Usage: career-os ai review-fit <job_id> [--dry-run]");
-  const flags = parseFlags(args.slice(1));
+  const flags = parseCommandFlags(args.slice(1), { "dry-run": "boolean" }, "ai review-fit");
   const job = findJob(jobId);
   const prompt = aiPrompt("Fit Review", `
 Review whether the deterministic CareerOS score and recommendation are sensible.
@@ -470,7 +652,7 @@ ${fence(JSON.stringify(aiJobPayload(job), null, 2), "json")}
 }
 
 function aiSummarizeReport(args) {
-  const flags = parseFlags(args);
+  const flags = parseCommandFlags(args, { "dry-run": "boolean" }, "ai summarize-report");
   const latestReport = latestFile(PATHS.reports, ".md");
   if (!latestReport) throw new Error("No report found. Run career-os report first.");
   const reportPath = path.join(ROOT, latestReport);
@@ -503,7 +685,7 @@ ${fence(JSON.stringify(tables, null, 2), "json")}
 function aiDraft(args) {
   const id = args[0];
   if (!isValidIdArg(id)) throw new Error("Usage: career-os ai draft <application_id|job_id> [--dry-run]");
-  const flags = parseFlags(args.slice(1));
+  const flags = parseCommandFlags(args.slice(1), { "dry-run": "boolean" }, "ai draft");
   const context = getApplicationContext(id);
   const dir = ensureApplicationDir(context.job, context.application);
   const prompt = aiApplicationPrompt("Application Draft", context, dir, `
@@ -523,7 +705,7 @@ Constraints:
 function aiReviewDraft(args) {
   const id = args[0];
   if (!isValidIdArg(id)) throw new Error("Usage: career-os ai review-draft <application_id|job_id> [--dry-run]");
-  const flags = parseFlags(args.slice(1));
+  const flags = parseCommandFlags(args.slice(1), { "dry-run": "boolean" }, "ai review-draft");
   const context = getApplicationContext(id);
   const dir = ensureApplicationDir(context.job, context.application);
   const prompt = aiApplicationPrompt("Draft Review", context, dir, `
@@ -542,7 +724,7 @@ Constraints:
 function aiInterview(args) {
   const id = args[0];
   if (!isValidIdArg(id)) throw new Error("Usage: career-os ai interview <application_id|job_id> [--dry-run]");
-  const flags = parseFlags(args.slice(1));
+  const flags = parseCommandFlags(args.slice(1), { "dry-run": "boolean" }, "ai interview");
   const context = getApplicationContext(id);
   const dir = ensureApplicationDir(context.job, context.application);
   const prompt = aiApplicationPrompt("Interview Prep", context, dir, `
@@ -660,7 +842,7 @@ function fence(value, language) {
 
 function listApplications(limitArg) {
   ensureDirs();
-  const limit = Math.max(1, Number(limitArg || 25));
+  const limit = parseLimit(limitArg, 25, "applications list");
   const rows = store.readApplications().slice(0, limit);
   if (!rows.length) {
     console.log("No applications tracked yet.");
@@ -687,9 +869,9 @@ function updateApplicationStatus(applicationId, status) {
 
 function updateApplicationFollowup(applicationId, args) {
   if (!isValidIdArg(applicationId)) throw new Error("Usage: career-os applications followup <application_id> --date YYYY-MM-DD");
-  const flags = parseFlags(args);
+  const flags = parseCommandFlags(args, { date: "string", next: "string" }, "applications followup");
   const date = flags.date || flags.next;
-  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(String(date))) {
+  if (!isIsoDate(date)) {
     throw new Error("Missing or invalid follow-up date. Usage: career-os applications followup <application_id> --date YYYY-MM-DD");
   }
   const rows = store.readApplications();
@@ -698,6 +880,12 @@ function updateApplicationFollowup(applicationId, args) {
   rows[index] = { ...rows[index], next_follow_up: date };
   store.writeApplications(rows);
   console.log(`Set next follow-up for ${rows[index].application_id} to ${date}.`);
+}
+
+function isIsoDate(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ""))) return false;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
 }
 
 function generateInterviewPrep(id) {
@@ -802,7 +990,8 @@ function applyJob(jobId) {
 }
 
 function resetData(args) {
-  if (!args.includes("--data")) throw new Error("Refusing reset without explicit flag. Usage: career-os reset --data");
+  const flags = parseCommandFlags(args, { data: "boolean" }, "reset");
+  if (!flags.data) throw new Error("Refusing reset without explicit flag. Usage: career-os reset --data");
   ensureDirs();
   store.resetData();
   console.log("Reset local data, tables, and reports.");
@@ -1276,43 +1465,26 @@ function inferRedFlags(location, description, salary) {
   return flags;
 }
 
-function parseJsonOrJsonl(text) {
+function parseJsonOrJsonl(text, ext = "") {
   const trimmed = text.trim();
-  if (!trimmed) return [];
-  if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
+  if (!trimmed) return { jobs: [], errors: [] };
+  if (ext === ".json" || trimmed.startsWith("[")) {
     const parsed = JSON.parse(trimmed);
-    return Array.isArray(parsed) ? parsed : [parsed];
+    return { jobs: Array.isArray(parsed) ? parsed : [parsed], errors: [] };
   }
-  return trimmed.split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
-}
-
-function parseCsv(text) {
-  const rows = text.trim().split(/\r?\n/).filter(Boolean).map(parseCsvLine);
-  const headers = rows.shift() || [];
-  return rows.map((row) => Object.fromEntries(headers.map((header, index) => [header, row[index] || ""])));
-}
-
-function parseCsvLine(line) {
-  const cells = [];
-  let current = "";
-  let quoted = false;
-  for (let index = 0; index < line.length; index += 1) {
-    const char = line[index];
-    const next = line[index + 1];
-    if (char === "\"" && quoted && next === "\"") {
-      current += "\"";
-      index += 1;
-    } else if (char === "\"") {
-      quoted = !quoted;
-    } else if (char === "," && !quoted) {
-      cells.push(current);
-      current = "";
-    } else {
-      current += char;
+  const jobs = [];
+  const errors = [];
+  trimmed.split(/\r?\n/).forEach((line, index) => {
+    if (!line.trim()) return;
+    try {
+      const value = JSON.parse(line);
+      if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("expected a JSON object");
+      jobs.push(value);
+    } catch (error) {
+      errors.push({ line: index + 1, error: error.message, excerpt: line.slice(0, 240) });
     }
-  }
-  cells.push(current);
-  return cells;
+  });
+  return { jobs, errors };
 }
 
 function toCsv(rows) {
@@ -1358,6 +1530,15 @@ function isValidIdArg(value) {
   return Boolean(value && value !== "undefined" && value !== "null");
 }
 
+function parseLimit(value, fallback, context) {
+  if (value === undefined) return fallback;
+  const number = Number(value);
+  if (!Number.isInteger(number) || number < 1 || number > 1000) {
+    throw usageError(`${context} limit must be an integer between 1 and 1000`);
+  }
+  return number;
+}
+
 function jsonParseError(text) {
   if (!text.trim()) return "empty json";
   try {
@@ -1395,24 +1576,7 @@ function stableId(parts) {
 }
 
 function dedupeById(jobs) {
-  return [...new Map(jobs.map((job) => [job.id, job])).values()];
-}
-
-function parseFlags(args) {
-  const flags = {};
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index];
-    if (!arg.startsWith("--")) continue;
-    const key = arg.slice(2);
-    const next = args[index + 1];
-    if (!next || next.startsWith("--")) {
-      flags[key] = true;
-    } else {
-      flags[key] = next;
-      index += 1;
-    }
-  }
-  return flags;
+  return dedupeJobRecords(jobs);
 }
 
 function validateApplicationGate(job) {
@@ -1471,6 +1635,14 @@ function countBy(rows, key) {
     acc[value] = (acc[value] || 0) + 1;
     return acc;
   }, {});
+}
+
+function pruneSearchCache(cache, maxEntries) {
+  const entries = Object.entries(cache.searches || {})
+    .filter(([, value]) => value && Array.isArray(value.jobs) && Number.isFinite(Date.parse(value.fetched_at)))
+    .sort((a, b) => Date.parse(b[1].fetched_at) - Date.parse(a[1].fetched_at))
+    .slice(0, Math.max(1, Number(maxEntries || 250)));
+  cache.searches = Object.fromEntries(entries);
 }
 
 function latestFile(dir, ext) {
@@ -1848,6 +2020,7 @@ function ensureDirs() {
     "outputs/reports",
     "outputs/tables",
     "outputs/ai",
+    "outputs/import-errors",
     "outputs/applications"
   ].forEach((dir) => fs.mkdirSync(path.join(ROOT, dir), { recursive: true }));
 }
@@ -1877,20 +2050,20 @@ function defaultSearchProfile() {
 function defaultCandidateProfileJson() {
   return {
     name: "",
-    location: "Brazil",
-    timezone: "America/Sao_Paulo",
+    location: "",
+    timezone: "UTC",
     languages: [],
-    skills_strong: ["python", "typescript", "ai", "llm", "automation"],
-    skills_medium: ["react", "node.js", "backend", "postgres", "docker"],
-    skills_learning: ["kubernetes", "soc2", "langchain"],
-    skills_adjacent: ["product", "data pipelines", "apis"],
-    target_roles: ["AI Engineer", "Full Stack Engineer", "Backend Engineer", "Developer Tools Engineer", "AI Product Engineer"],
+    skills_strong: [],
+    skills_medium: [],
+    skills_learning: [],
+    skills_adjacent: [],
+    target_roles: [],
     avoid_roles: ["unpaid internship", "commission-only", "onsite-only"],
-    work_authorization: ["Brazil"],
-    accepted_regions: ["LATAM", "Worldwide", "Brazil", "Remote"],
-    salary_min_monthly_usd: 4000,
-    salary_target_monthly_usd: 7000,
-    contract_types: ["contractor", "full-time", "PJ", "B2B"]
+    work_authorization: [],
+    accepted_regions: [],
+    salary_min_monthly_usd: 0,
+    salary_target_monthly_usd: 0,
+    contract_types: []
   };
 }
 
@@ -1950,6 +2123,7 @@ function defaultSourcesConfig() {
   return {
     default_limit: 25,
     cache_ttl_hours: 6,
+    cache_max_entries: 250,
     sources: {
       remotive: {
         enabled: true,
@@ -2052,6 +2226,8 @@ It collects or imports jobs, normalizes them, deduplicates seen roles, scores fi
 \`\`\`bash
 npm install
 npm run init
+npm start -- profile setup
+npm start -- doctor
 npm start -- import ./jobs.json
 npm start -- normalize
 npm start -- score
@@ -2063,6 +2239,8 @@ After global linking, the same commands can run as:
 
 \`\`\`bash
 career-os init
+career-os profile setup
+career-os doctor
 career-os import ./jobs.json
 career-os normalize
 career-os score
@@ -2085,9 +2263,9 @@ career-os ai draft <application_id>
 
 AI prompts and responses are saved under \`outputs/ai\`. Application AI responses are copied into the approved application workspace. CareerOS does not submit applications automatically.
 
-## MVP Scope
+## Product Boundary
 
-The first version intentionally supports manual, JSON, JSONL, and CSV imports before scraping. Remote source connectors come after the scoring and reporting loop is useful.
+CareerOS supports public remote sources plus manual, JSON, JSONL, and multiline CSV imports. It ranks opportunities and prepares reviewable local artifacts, but never submits applications automatically.
 `;
 }
 
@@ -2095,12 +2273,11 @@ function setupMd() {
   return `# Setup
 
 1. Run \`career-os init\`.
-2. Edit \`profile/candidate-profile.md\`.
-3. Edit \`profile/role-preferences.md\`.
-4. Tune \`config/search_profile.json\`.
-5. Tune \`config/scoring_weights.json\`.
-6. Import jobs with \`career-os import <file>\`.
-7. Run \`career-os run\` or the individual pipeline commands.
+2. Run \`career-os profile setup\` and answer the onboarding questions.
+3. Run \`career-os doctor\` to validate the workspace.
+4. Optionally tune \`config/search_profile.json\` and \`config/scoring_weights.json\`.
+5. Import jobs with \`career-os import <file>\` or search with \`career-os search <source|all>\`.
+6. Run \`career-os run\` or the individual pipeline commands.
 `;
 }
 
@@ -2141,13 +2318,19 @@ function rolePreferencesMd() {
 
 ## Target Roles
 
-- AI Product Engineer
-- Full Stack Engineer
-- Backend Engineer
-- Developer Tools Engineer
-- Technical Product Manager
-- Automation Engineer
-- AI Solutions Engineer
+TODO
+
+## Accepted Regions
+
+TODO
+
+## Compensation
+
+TODO
+
+## Contract Types
+
+TODO
 
 ## Avoid
 

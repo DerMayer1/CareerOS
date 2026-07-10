@@ -5,6 +5,7 @@ function printHelp() {
 
 Usage:
   career-os init
+  career-os doctor [--network] [--strict]
   career-os sources list
   career-os search <source|all> --query "AI Engineer" --limit 20
   career-os import <jobs.json|jobs.jsonl|jobs.csv>
@@ -15,6 +16,8 @@ Usage:
   career-os report
   career-os status
   career-os profile check
+  career-os profile setup
+  career-os profile setup --yes --name "Your Name" --location Brazil --roles "AI Engineer,Backend Engineer" --skills "python,typescript" --regions "LATAM,Worldwide" --salary-min 4000 --salary-target 7000 --contract-types "contractor,full-time"
   career-os ai doctor
   career-os ai profile-sync [--dry-run]
   career-os ai extract <job_id|new> [--limit 5] [--dry-run]
@@ -39,6 +42,10 @@ Usage:
   career-os apply <job_id>
   career-os reset --data
   career-os run <jobs-file>
+
+Global diagnostics:
+  --verbose      Print stack traces for failures
+  --json-errors  Print machine-readable errors
 
 MVP flow:
   1. career-os init

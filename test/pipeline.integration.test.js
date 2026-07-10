@@ -15,6 +15,27 @@ test("deterministic pipeline, reports, and application gate work end to end", ()
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "career-os-e2e-"));
   try {
     assertSuccess(run(workspace, ["init"]));
+    const initialDoctor = run(workspace, ["doctor"]);
+    assertSuccess(initialDoctor);
+    const initialDiagnosis = JSON.parse(initialDoctor.stdout);
+    assert.equal(initialDiagnosis.warnings, 1);
+    assert.match(initialDiagnosis.checks.find((check) => check.name === "profile").detail, /2 profile files/);
+
+    assertSuccess(run(workspace, [
+      "profile", "setup", "--yes",
+      "--name", "Test Candidate",
+      "--location", "Brazil",
+      "--timezone", "America/Sao_Paulo",
+      "--roles", "AI Engineer,Full Stack Engineer",
+      "--skills", "python,typescript,react,llm,apis",
+      "--regions", "LATAM,Worldwide,Brazil,Remote",
+      "--salary-min", "4000",
+      "--salary-target", "7000",
+      "--contract-types", "contractor,full-time"
+    ]));
+    const profileCheck = run(workspace, ["profile", "check"]);
+    assertSuccess(profileCheck);
+    assert.equal(JSON.parse(profileCheck.stdout).ready, true);
     assertSuccess(run(workspace, ["run", sample]));
 
     const jobsPath = path.join(workspace, "data", "jobs_normalized.json");

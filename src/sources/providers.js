@@ -141,35 +141,105 @@ async function searchWwr(source, query, limit) {
   });
 }
 
-function fetchJson(url) {
-  return fetchText(url).then((text) => JSON.parse(text));
+async function fetchJson(url) {
+  const text = await fetchText(url);
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    throw new Error(`Invalid JSON from ${url}: ${error.message}`);
+  }
 }
 
-function fetchText(url) {
+async function fetchText(url, options = {}) {
+  const settings = {
+    timeoutMs: options.timeoutMs || 20000,
+    maxRedirects: options.maxRedirects ?? 5,
+    maxBytes: options.maxBytes || 5 * 1024 * 1024,
+    retries: options.retries ?? 2
+  };
+  let lastError;
+  for (let attempt = 0; attempt <= settings.retries; attempt += 1) {
+    try {
+      return await requestText(url, settings, 0);
+    } catch (error) {
+      lastError = error;
+      if (attempt >= settings.retries || !isRetryable(error)) throw error;
+      await wait(Math.min(1000, 200 * (2 ** attempt)));
+    }
+  }
+  throw lastError;
+}
+
+function requestText(url, settings, redirects) {
   return new Promise((resolve, reject) => {
-    const client = url.startsWith("https:") ? https : http;
-    const request = client.get(url, {
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch {
+      reject(new Error(`Invalid source URL: ${url}`));
+      return;
+    }
+    if (!["http:", "https:"].includes(parsed.protocol)) {
+      reject(new Error(`Unsupported source URL protocol: ${parsed.protocol}`));
+      return;
+    }
+    const client = parsed.protocol === "https:" ? https : http;
+    const request = client.get(parsed, {
       headers: {
-        "User-Agent": "CareerOS/0.1 (+https://github.com/DerMayer1/CareerOS)",
+        "User-Agent": "CareerOS/0.2 (+https://github.com/DerMayer1/CareerOS)",
         "Accept": "application/json, application/rss+xml, application/xml, text/xml, text/plain, */*"
       }
     }, (response) => {
       if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
-        resolve(fetchText(new URL(response.headers.location, url).toString()));
+        response.resume();
+        if (redirects >= settings.maxRedirects) {
+          reject(new Error(`Too many redirects fetching ${url}`));
+          return;
+        }
+        resolve(requestText(new URL(response.headers.location, parsed).toString(), settings, redirects + 1));
         return;
       }
       if (response.statusCode < 200 || response.statusCode >= 300) {
-        reject(new Error(`HTTP ${response.statusCode} for ${url}`));
+        const error = new Error(`HTTP ${response.statusCode} for ${url}`);
+        error.retryable = response.statusCode === 429 || response.statusCode >= 500;
         response.resume();
+        reject(error);
+        return;
+      }
+      const declaredSize = Number(response.headers["content-length"] || 0);
+      if (declaredSize > settings.maxBytes) {
+        response.resume();
+        reject(new Error(`Response from ${url} exceeds ${settings.maxBytes} bytes`));
         return;
       }
       const chunks = [];
-      response.on("data", (chunk) => chunks.push(chunk));
+      let received = 0;
+      response.on("data", (chunk) => {
+        received += chunk.length;
+        if (received > settings.maxBytes) {
+          response.destroy(new Error(`Response from ${url} exceeds ${settings.maxBytes} bytes`));
+          return;
+        }
+        chunks.push(chunk);
+      });
       response.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+      response.on("error", reject);
     });
-    request.setTimeout(20000, () => request.destroy(new Error(`Timeout fetching ${url}`)));
+    request.setTimeout(settings.timeoutMs, () => {
+      const error = new Error(`Timeout fetching ${url}`);
+      error.retryable = true;
+      request.destroy(error);
+    });
     request.on("error", reject);
   });
+}
+
+function isRetryable(error) {
+  return error.retryable === true || new Set(["ECONNRESET", "ECONNREFUSED", "EAI_AGAIN", "ETIMEDOUT"]).has(error.code);
+}
+
+function wait(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function matchesQuery(text, query) {
@@ -234,6 +304,8 @@ function stableId(parts) {
 
 module.exports = {
   buildManualSearchUrl,
+  fetchText,
   listProviders,
+  parseRssItems,
   searchProvider
 };

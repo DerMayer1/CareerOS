@@ -3,22 +3,25 @@
 ## Prerequisites
 
 - Node.js 18 or newer.
-- No database is required for Phase 1.
+- No database is required.
 - No Claude Code dependency is required.
 
 ## First Run
 
 ```bash
 node bin/career-os.js init
+node bin/career-os.js profile setup
 node bin/career-os.js profile check
+node bin/career-os.js doctor
 ```
 
-Then edit:
+The profile wizard writes the candidate profile, role preferences, search roles, regions, timezone, and salary thresholds. For non-interactive setup:
 
-- `profile/candidate-profile.md`
-- `profile/role-preferences.md`
-- `config/search_profile.json`
-- `config/scoring_weights.json`
+```bash
+career-os profile setup --yes --name "Your Name" --location "Brazil" --timezone "America/Sao_Paulo" --roles "AI Engineer,Backend Engineer" --skills "python,typescript" --regions "LATAM,Worldwide" --salary-min 4000 --salary-target 7000 --contract-types "contractor,full-time"
+```
+
+Run `career-os doctor --network` when you also want DNS checks for configured sources. Use `--strict` to make incomplete profile or network warnings return a failing exit code.
 
 ## Run The Local Pipeline
 
@@ -26,6 +29,7 @@ Then edit:
 node bin/career-os.js import examples/jobs.sample.json
 node bin/career-os.js normalize
 node bin/career-os.js dedupe
+node bin/career-os.js extract
 node bin/career-os.js score
 node bin/career-os.js report
 node bin/career-os.js show top
@@ -45,3 +49,7 @@ Applications are blocked until a job is scored and approved:
 node bin/career-os.js approve <job_id>
 node bin/career-os.js apply <job_id>
 ```
+
+## Troubleshooting
+
+CareerOS prints concise errors by default. Add `--verbose` to any command for a stack trace, or `--json-errors` for machine-readable failures.

@@ -8,6 +8,7 @@ function dispatchCommand(args, handlers) {
   }
 
   if (command === "init") return handlers.initProject();
+  if (command === "doctor") return handlers.doctor(args.slice(1));
   if (command === "sources" && args[1] === "list") return handlers.listSources();
   if (command === "search") return handlers.searchJobs(args.slice(1));
   if (command === "import") return handlers.importJobs(args[1]);
@@ -19,6 +20,7 @@ function dispatchCommand(args, handlers) {
   if (command === "run") return handlers.runPipeline(args.slice(1));
   if (command === "status") return handlers.showStatus();
   if (command === "profile" && args[1] === "check") return handlers.checkProfile();
+  if (command === "profile" && args[1] === "setup") return handlers.profileSetup(args.slice(2));
   if (command === "ai") return handlers.runAiCommand(args.slice(1));
   if (command === "applications" && args[1] === "list") return handlers.listApplications(args[2]);
   if (command === "applications" && args[1] === "status") return handlers.updateApplicationStatus(args[2], args[3]);

@@ -1,6 +1,7 @@
 {
   "default_limit": 25,
   "cache_ttl_hours": 6,
+  "cache_max_entries": 250,
   "sources": {
     "remotive": {
       "enabled": true,

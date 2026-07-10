@@ -3,10 +3,11 @@
   "$id": "https://github.com/DerMayer1/CareerOS/schemas/sources.schema.json",
   "title": "CareerOS sources configuration",
   "type": "object",
-  "required": ["default_limit", "cache_ttl_hours", "sources"],
+  "required": ["default_limit", "cache_ttl_hours", "cache_max_entries", "sources"],
   "properties": {
     "default_limit": { "type": "number", "minimum": 1, "maximum": 1000 },
     "cache_ttl_hours": { "type": "number", "minimum": 0, "maximum": 8760 },
+    "cache_max_entries": { "type": "number", "minimum": 1, "maximum": 10000 },
     "sources": {
       "type": "object",
       "additionalProperties": {

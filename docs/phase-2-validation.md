@@ -1,5 +1,7 @@
 # Phase 2 Validation
 
+Provider execution now includes bounded retries, a 20-second request timeout, five-redirect limit, a 5 MB response limit, concurrent `search all`, per-source failure isolation, stale-cache fallback, and bounded cache retention.
+
 Date: 2026-07-07
 
 ## Commands

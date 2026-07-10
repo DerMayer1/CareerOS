@@ -3,6 +3,7 @@
 const fs = require("fs");
 const path = require("path");
 const { APPLICATION_HEADERS } = require("../applications/schema");
+const { csvEscape, parseCsv } = require("../core/csv");
 const { validateApplicationRows, validateJobs } = require("../core/validation");
 const { appendFileAtomicSync, writeFileAtomicSync } = require("./atomic-file");
 
@@ -74,6 +75,7 @@ function createFileStore({ paths, root }) {
     writeApplications([]);
     cleanDir(paths.reports);
     cleanDir(paths.tables);
+    cleanDir(paths.importErrors);
   }
 
   function relative(filePath) {
@@ -100,7 +102,12 @@ function createFileStore({ paths, root }) {
 function readJson(filePath, fallback) {
   if (!fs.existsSync(filePath)) return fallback;
   const text = fs.readFileSync(filePath, "utf8").trim();
-  return text ? JSON.parse(text) : fallback;
+  if (!text) return fallback;
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    throw new Error(`Invalid JSON in ${filePath}: ${error.message}`);
+  }
 }
 
 function writeJson(filePath, value) {
@@ -109,7 +116,14 @@ function writeJson(filePath, value) {
 
 function readJsonl(filePath) {
   if (!fs.existsSync(filePath)) return [];
-  return fs.readFileSync(filePath, "utf8").split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
+  return fs.readFileSync(filePath, "utf8").split(/\r?\n/).flatMap((line, index) => {
+    if (!line.trim()) return [];
+    try {
+      return [JSON.parse(line)];
+    } catch (error) {
+      throw new Error(`Invalid JSONL in ${filePath} at line ${index + 1}: ${error.message}`);
+    }
+  });
 }
 
 function cleanDir(dir) {
@@ -123,46 +137,6 @@ function cleanDir(dir) {
       fs.unlinkSync(target);
     }
   }
-}
-
-function parseCsv(text) {
-  const rows = [];
-  const lines = text.split(/\r?\n/).filter(Boolean);
-  if (!lines.length) return rows;
-  const headers = splitCsvLine(lines[0]);
-  for (const line of lines.slice(1)) {
-    const values = splitCsvLine(line);
-    rows.push(Object.fromEntries(headers.map((header, index) => [header, values[index] || ""])));
-  }
-  return rows;
-}
-
-function splitCsvLine(line) {
-  const values = [];
-  let value = "";
-  let quoted = false;
-  for (let index = 0; index < line.length; index += 1) {
-    const char = line[index];
-    const next = line[index + 1];
-    if (char === "\"" && quoted && next === "\"") {
-      value += "\"";
-      index += 1;
-    } else if (char === "\"") {
-      quoted = !quoted;
-    } else if (char === "," && !quoted) {
-      values.push(value);
-      value = "";
-    } else {
-      value += char;
-    }
-  }
-  values.push(value);
-  return values;
-}
-
-function csvEscape(value) {
-  const text = value === undefined || value === null ? "" : String(value);
-  return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, "\"\"")}"` : text;
 }
 
 module.exports = {

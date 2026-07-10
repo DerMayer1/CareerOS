@@ -26,7 +26,8 @@ function createProjectPaths(root = process.cwd()) {
       applications: path.join(dataDir, "applications.csv"),
       reports: path.join(outputsDir, "reports"),
       tables: path.join(outputsDir, "tables"),
-      aiOutputs: path.join(outputsDir, "ai")
+      aiOutputs: path.join(outputsDir, "ai"),
+      importErrors: path.join(outputsDir, "import-errors")
     }
   };
 }

@@ -7,6 +7,8 @@ CareerOS is a local-first CLI radar for remote job opportunities. It is adapted 
 ```bash
 npm install
 node bin/career-os.js init
+node bin/career-os.js profile setup
+node bin/career-os.js doctor
 node bin/career-os.js run examples/jobs.sample.json
 node bin/career-os.js status
 node bin/career-os.js show top
@@ -17,6 +19,8 @@ After linking the package, use the CLI name directly:
 ```bash
 npm link
 career-os init
+career-os profile setup
+career-os doctor
 career-os import examples/jobs.sample.json
 career-os normalize
 career-os dedupe
@@ -30,9 +34,11 @@ career-os show top
 | Command | Purpose |
 |---|---|
 | `career-os init` | Create local folders, configs, profile templates, and data files |
+| `career-os doctor [--network] [--strict]` | Check runtime, permissions, schemas, local data, profile, optional Codex, and optional DNS |
 | `career-os sources list` | List configured remote sources |
 | `career-os search <source|all>` | Search remote sources and append raw jobs |
 | `career-os profile check` | Report missing/TODO profile fields |
+| `career-os profile setup` | Run an interactive profile wizard; use `--yes` with flags in scripts |
 | `career-os ai doctor` | Verify Codex CLI availability and CareerOS AI configuration |
 | `career-os ai profile-sync` | Ask Codex to review profile files and propose edits |
 | `career-os ai extract <job_id|new>` | Ask Codex to extract nuanced requirements from job descriptions |
@@ -41,7 +47,7 @@ career-os show top
 | `career-os ai draft <id>` | Ask Codex to draft approved application material |
 | `career-os ai review-draft <id>` | Ask Codex to review approved application drafts |
 | `career-os ai interview <id>` | Ask Codex to create deeper interview prep |
-| `career-os import <file>` | Import JSON, JSONL, or CSV jobs into `data/jobs_raw.jsonl` |
+| `career-os import <file>` | Import JSON, JSONL, or multiline CSV jobs; invalid JSONL rows are quarantined |
 | `career-os normalize` | Convert raw jobs into the CareerOS job model |
 | `career-os dedupe` | Deduplicate normalized jobs and update seen state |
 | `career-os extract` | Extract deterministic requirements and job signals |
@@ -117,7 +123,7 @@ Every AI command writes the prompt and response under `outputs/ai`. Application 
 
 ## Remote Search
 
-Phase 2 adds public remote sources:
+CareerOS includes public remote sources:
 
 ```bash
 career-os sources list
@@ -144,7 +150,18 @@ career-os show top
 
 Use `--dry-run` to inspect results without writing raw jobs.
 
+`search all` runs automatic providers concurrently. A failed provider is reported without discarding successful providers, and stale cache is used when available. Cache size is bounded by `cache_max_entries` in `config/sources.json`.
+
 Wellfound, Indeed Brazil, and Glassdoor Brazil are configured as manual search sources. They print search URLs and do not write fake job rows, because no low-risk public search API is configured for them.
+
+## Diagnostics And Input Safety
+
+- Unknown, duplicate, missing-value, and invalid numeric flags fail with exit code 2.
+- Failures are concise by default; add `--verbose` for a stack trace or `--json-errors` for structured errors.
+- JSONL imports keep valid rows and write rejected-line details under `outputs/import-errors`.
+- CSV supports quoted commas, escaped quotes, CRLF, and multiline descriptions.
+- Dedupe canonicalizes tracked URLs and merges richer duplicate records while preserving stable IDs.
+- Provider requests use timeouts, bounded retries, redirect limits, and response-size limits.
 
 ## Scoring
 
